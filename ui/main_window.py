@@ -40,3 +40,7 @@ class MainWindow(QMainWindow):
         splitter.setSizes([380, 800])
 
         outer_layout.addWidget(splitter)
+
+        # Whenever the left panel produces new audio (play or import), push
+        # it straight into the Waveform tab so it updates live.
+        self.left_panel.audio_ready.connect(self.right_panel.waveform_tab.update_audio)

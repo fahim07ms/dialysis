@@ -13,6 +13,8 @@ drop pyqtgraph plots in without touching this file's layout logic again.
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QTabWidget, QLabel
 from PyQt6.QtCore import Qt
 
+from ui.tabs.waveform_tab import WaveformTab
+
 
 def _placeholder_tab(message: str) -> QWidget:
     w = QWidget()
@@ -31,10 +33,8 @@ class RightPanel(QTabWidget):
         super().__init__(parent)
         self.setDocumentMode(True)
 
-        self.addTab(
-            _placeholder_tab("Waveform + magnitude spectrum arrive in Phase 3."),
-            "Waveform"
-        )
+        self.waveform_tab = WaveformTab()
+        self.addTab(self.waveform_tab, "Waveform")
         self.addTab(
             _placeholder_tab("Dynamic spectrogram arrives in Phase 7."),
             "Spectrogram"

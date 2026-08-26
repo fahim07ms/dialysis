@@ -42,6 +42,10 @@ class _PlaybackThread(QThread):
 
 class LeftPanel(QWidget):
 
+    # Emitted any time new audio samples exist for the analysis tabs to show:
+    # after playing a digit, playing a sequence, or importing a WAV file.
+    audio_ready = pyqtSignal(object, int)  # (numpy array, sample_rate)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._playback_thread = None
@@ -141,15 +145,9 @@ class LeftPanel(QWidget):
         self._play_single_digit(digit)
 
     def _play_single_digit(self, digit: str):
-        try:
-            samples = dsp.generate_dtmf_tone(digit, fs=SAMPLE_RATE, duration=TONE_DURATION)
-        except NotImplementedError:
-            self._set_status(
-                f"Key '{digit}' pressed — waiting on generate_dtmf_tone() "
-                f"in core/dsp_interface.py (Phase 1)."
-            )
-            return
+        samples = dsp.generate_dtmf_tone(digit, fs=SAMPLE_RATE, duration=TONE_DURATION)
         self._play(samples, SAMPLE_RATE)
+        self.audio_ready.emit(samples, SAMPLE_RATE)
         self._set_status(f"Playing '{digit}'…")
 
     def _on_play_clicked(self):
@@ -157,36 +155,17 @@ class LeftPanel(QWidget):
         if not digits:
             self._set_status("Type or tap a digit sequence first.")
             return
-
         samples = dsp.sequence_to_wav(digits, fs=SAMPLE_RATE, tone_duration=TONE_DURATION)
         self._play(samples, SAMPLE_RATE)
+        self.audio_ready.emit(samples, SAMPLE_RATE)
         self._set_status(f"Playing sequence: {digits}")
-
-    def _play_each_digit(self, digits: str):
-        # Fallback so Play still does *something* useful before Phase 2 exists.
-        import numpy as np
-        chunks = []
-        for d in digits:
-            try:
-                chunks.append(dsp.generate_dtmf_tone(d, fs=SAMPLE_RATE, duration=TONE_DURATION))
-                chunks.append(np.zeros(int(SAMPLE_RATE * 0.05)))
-            except NotImplementedError:
-                self._set_status("generate_dtmf_tone() isn't implemented yet (Phase 1).")
-                return
-        if chunks:
-            full = np.concatenate(chunks)
-            self._play(full, SAMPLE_RATE)
 
     def _on_export_clicked(self):
         digits = self.entry.text().strip()
         if not digits:
             self._set_status("Type a digit sequence before exporting.")
             return
-        try:
-            samples = dsp.sequence_to_wav(digits, fs=SAMPLE_RATE, tone_duration=TONE_DURATION)
-        except NotImplementedError:
-            self._set_status("Export needs sequence_to_wav() first (Phase 2).")
-            return
+        samples = dsp.sequence_to_wav(digits, fs=SAMPLE_RATE, tone_duration=TONE_DURATION)
         path, _ = QFileDialog.getSaveFileName(self, "Export WAV", f"{digits}.wav", "WAV files (*.wav)")
         if path:
             audio_io.save_wav(path, samples, SAMPLE_RATE)
@@ -197,6 +176,7 @@ class LeftPanel(QWidget):
         if not path:
             return
         samples, fs = audio_io.load_wav(path)
+        self.audio_ready.emit(samples, fs)
         self._set_status(f"Loaded {path} ({len(samples)} samples @ {fs} Hz). "
                           f"Decoding arrives in Phase 4/5.")
         # NOTE for Phase 4/5: this is where we will hand `samples, fs` off to

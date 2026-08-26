@@ -69,10 +69,12 @@ def generate_dtmf_tone(digit: str, fs: int = 8000, duration: float = 0.25) -> np
     Output:
         1-D numpy float array, values roughly in [-1, 1], length = fs*duration
         x[n] = sin(2*pi*f_low*n/fs) + sin(2*pi*f_high*n/fs)
+
+    Tip: n = np.arange(int(fs * duration))
     """
     f_low, f_high = DIGIT_TO_FREQS[digit]
-    x = np.arange(int(fs * duration))
-    x = np.sin(2 * np.pi * f_low * x / fs) + np.sin(2 * np.pi * f_high * x / fs)
+    n = np.arange(int(fs * duration))
+    x = np.sin(2 * np.pi * f_low * n / fs) + np.sin(2 * np.pi * f_high * n / fs)
     return x
 
 
@@ -103,8 +105,8 @@ def sequence_to_wav(digits: str, fs: int = 8000, tone_duration: float = 0.25,
     """
     wav = np.array([])
     for digit in digits:
-        wav = np.concatenate((wav, generate_dtmf_tone(digit, fs, tone_duration), np.zeros(int(fs * gap_duration))))
-
+        wav = np.concatenate((wav, generate_dtmf_tone(digit, fs, tone_duration),
+                               np.zeros(int(fs * gap_duration))))
     return wav
 
 
@@ -116,7 +118,7 @@ def compute_spectrum(x: np.ndarray, fs: int) -> tuple[np.ndarray, np.ndarray]:
     """
     TODO(you) — Phase 3
 
-    Compute the magnitude spectrum of a signal so the UI can plot it.
+    Compute the magnitude spectrum of a signal.
 
     Inputs:
         x  : 1-D numpy array, the audio signal
@@ -126,8 +128,6 @@ def compute_spectrum(x: np.ndarray, fs: int) -> tuple[np.ndarray, np.ndarray]:
         (freqs, magnitudes) — two 1-D numpy arrays of the SAME length.
         freqs       : frequency bins in Hz, only the positive half (0 .. fs/2)
         magnitudes  : magnitude (not power) at each bin
-
-    Tip: np.fft.rfft and np.fft.rfftfreq are your friends here.
     """
     raise NotImplementedError("Phase 3: implement compute_spectrum()")
 
