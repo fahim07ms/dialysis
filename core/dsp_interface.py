@@ -69,10 +69,11 @@ def generate_dtmf_tone(digit: str, fs: int = 8000, duration: float = 0.25) -> np
     Output:
         1-D numpy float array, values roughly in [-1, 1], length = fs*duration
         x[n] = sin(2*pi*f_low*n/fs) + sin(2*pi*f_high*n/fs)
-
-    Tip: n = np.arange(int(fs * duration))
     """
-    raise NotImplementedError("Phase 1: implement generate_dtmf_tone()")
+    f_low, f_high = DIGIT_TO_FREQS[digit]
+    x = np.arange(int(fs * duration))
+    x = np.sin(2 * np.pi * f_low * x / fs) + np.sin(2 * np.pi * f_high * x / fs)
+    return x
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +101,11 @@ def sequence_to_wav(digits: str, fs: int = 8000, tone_duration: float = 0.25,
     The UI's export button will take whatever you return here and write it
     straight to a .wav file — you don't need to touch any file I/O.
     """
-    raise NotImplementedError("Phase 2: implement sequence_to_wav()")
+    wav = np.array([])
+    for digit in digits:
+        wav = np.concatenate((wav, generate_dtmf_tone(digit, fs, tone_duration), np.zeros(int(fs * gap_duration))))
+
+    return wav
 
 
 # ---------------------------------------------------------------------------

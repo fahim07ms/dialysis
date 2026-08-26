@@ -157,15 +157,8 @@ class LeftPanel(QWidget):
         if not digits:
             self._set_status("Type or tap a digit sequence first.")
             return
-        try:
-            samples = dsp.sequence_to_wav(digits, fs=SAMPLE_RATE, tone_duration=TONE_DURATION)
-        except NotImplementedError:
-            self._set_status(
-                "sequence_to_wav() isn't implemented yet (Phase 2) — "
-                "playing each digit individually instead."
-            )
-            self._play_each_digit(digits)
-            return
+
+        samples = dsp.sequence_to_wav(digits, fs=SAMPLE_RATE, tone_duration=TONE_DURATION)
         self._play(samples, SAMPLE_RATE)
         self._set_status(f"Playing sequence: {digits}")
 
