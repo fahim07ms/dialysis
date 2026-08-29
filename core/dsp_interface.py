@@ -28,6 +28,7 @@ values so you can check your work without ever opening the app window.
 
 from __future__ import annotations
 import numpy as np
+import math
 
 # ---------------------------------------------------------------------------
 # DTMF frequency table (this part is already done for you — it's just data,
@@ -107,12 +108,34 @@ def sequence_to_wav(digits: str, fs: int = 8000, tone_duration: float = 0.25,
     for digit in digits:
         wav = np.concatenate((wav, generate_dtmf_tone(digit, fs, tone_duration),
                                np.zeros(int(fs * gap_duration))))
+
     return wav
 
 
 # ---------------------------------------------------------------------------
 # PHASE 3 — Spectrum analysis
 # ---------------------------------------------------------------------------
+def fft(x: np.ndarray) -> np.ndarray:
+    N = len(x)
+
+    if N <= 1:
+        return x
+
+    pad_len = (2 ** math.floor(math.log2(N) + 1)) - N
+    if pad_len != N:
+        x = np.concatenate((x, np.zeros(pad_len)))
+
+    e = x[::2]
+    o = x[1::2]
+
+    g_k = fft(e)
+    h_k = fft(o)
+
+    wnk = np.exp((-2j * np.pi * np.arange(len(e))) / N)
+
+    X = np.concatenate((g_k + wnk * h_k, g_k - wnk * h_k))
+    return X
+
 
 def compute_spectrum(x: np.ndarray, fs: int) -> tuple[np.ndarray, np.ndarray]:
     """
@@ -129,7 +152,12 @@ def compute_spectrum(x: np.ndarray, fs: int) -> tuple[np.ndarray, np.ndarray]:
         freqs       : frequency bins in Hz, only the positive half (0 .. fs/2)
         magnitudes  : magnitude (not power) at each bin
     """
-    raise NotImplementedError("Phase 3: implement compute_spectrum()")
+    X = fft(x)
+    N = len(X)
+    freqs = np.arange(N) * fs / N
+    magnitudes = np.abs(X) / len(x)
+    half = N // 2
+    return freqs[:half], magnitudes[:half]
 
 
 # ---------------------------------------------------------------------------
