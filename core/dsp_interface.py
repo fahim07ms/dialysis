@@ -29,6 +29,7 @@ values so you can check your work without ever opening the app window.
 from __future__ import annotations
 import numpy as np
 import math
+from .utils import bit_reverse, bit_reversal, pad_with_zeros
 
 # ---------------------------------------------------------------------------
 # DTMF frequency table (this part is already done for you — it's just data,
@@ -57,8 +58,6 @@ for row_i, row in enumerate(KEYPAD_LAYOUT):
 
 def generate_dtmf_tone(digit: str, fs: int = 8000, duration: float = 0.25) -> np.ndarray:
     """
-    TODO(you) — Phase 1
-
     Build one DTMF tone for a single key.
 
     Inputs:
@@ -86,8 +85,6 @@ def generate_dtmf_tone(digit: str, fs: int = 8000, duration: float = 0.25) -> np
 def sequence_to_wav(digits: str, fs: int = 8000, tone_duration: float = 0.25,
                      gap_duration: float = 0.05) -> np.ndarray:
     """
-    TODO(you) — Phase 2
-
     Turn a multi-digit string like "512*90" into one continuous waveform:
     tone, silence, tone, silence, ... (this is what real phones do so a
     listener can tell where one digit ends and the next begins).
@@ -115,32 +112,62 @@ def sequence_to_wav(digits: str, fs: int = 8000, tone_duration: float = 0.25,
 # ---------------------------------------------------------------------------
 # PHASE 3 — Spectrum analysis
 # ---------------------------------------------------------------------------
+def fft_recursive(x: np.ndarray) -> np.ndarray:
+    N = len(x)
+
+    if N <= 1:
+        return x
+
+    x = pad_with_zeros(x)
+
+    N_padded = len(x)
+
+    # Divide into evens and odds
+    e = x[::2]
+    o = x[1::2]
+
+    # Calculate G_k & H_k
+    g_k = fft_recursive(e)
+    h_k = fft_recursive(o)
+
+    wnk = np.exp((-2j * np.pi * np.arange(N_padded // 2)) / N_padded)
+
+    X = np.concatenate((g_k + wnk * h_k, g_k - wnk * h_k))
+    return X
+
+
 def fft(x: np.ndarray) -> np.ndarray:
     N = len(x)
 
     if N <= 1:
         return x
 
-    pad_len = (2 ** math.floor(math.log2(N) + 1)) - N
-    if pad_len != N:
-        x = np.concatenate((x, np.zeros(pad_len)))
+    x = pad_with_zeros(x).astype(np.complex64)
 
-    e = x[::2]
-    o = x[1::2]
+    N_padded = len(x)
 
-    g_k = fft(e)
-    h_k = fft(o)
+    # Sort the array on Bit Reverse Order
+    x = bit_reversal(x)
 
-    wnk = np.exp((-2j * np.pi * np.arange(len(e))) / N)
+    # No. of stages
+    n_stages = int(math.log2(N_padded))
+    for s in range(1, n_stages + 1):
+        M = 2**s
+        WM = np.exp(-2j * np.pi / M)
+        for l in range(0, N_padded - M + 1, M):
+            # Twiddle factor
+            W = 1
+            for k in range(M // 2):
+                g = x[l + k]
+                h = W * x[l + k + M//2]
+                x[l + k] = g + h
+                x[l + k + M//2] = g - h
+                W = W * WM
 
-    X = np.concatenate((g_k + wnk * h_k, g_k - wnk * h_k))
-    return X
-
+    return x
 
 def compute_spectrum(x: np.ndarray, fs: int) -> tuple[np.ndarray, np.ndarray]:
     """
-    TODO(you) — Phase 3
-
     Compute the magnitude spectrum of a signal.
 
     Inputs:
