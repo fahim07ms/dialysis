@@ -44,3 +44,7 @@ class MainWindow(QMainWindow):
         # Whenever the left panel produces new audio (play or import), push
         # it straight into the Waveform tab so it updates live.
         self.left_panel.audio_ready.connect(self.right_panel.waveform_tab.update_audio)
+
+        # While audio is actually playing, stream partial samples so the
+        # waveform/spectrum appear to grow in sync with playback.
+        self.left_panel.playback_progress.connect(self.right_panel.waveform_tab.update_audio_live)

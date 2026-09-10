@@ -8,13 +8,25 @@ any device I/O — it never does the math itself. If a DSP function isn't
 implemented yet, we catch NotImplementedError and show a friendly status
 message instead of crashing, so the UI stays usable while you're still
 building out core/dsp_interface.py phase by phase.
+
+LIVE PLAYBACK VIEW
+-------------------
+While audio plays, a QTimer ticks roughly 30 times a second. Each tick, we
+estimate "how many samples have played so far" from wall-clock elapsed time
+(samples_played = elapsed_seconds * fs), and emit just that much of the
+array via `playback_progress`. The Waveform tab redraws with that partial
+slice, so the plot appears to "grow" in sync with what you're hearing. When
+playback finishes, we emit the FULL array via `audio_ready`, which triggers
+the complete analysis (spectrum + segmentation) on the whole signal.
 """
+
+import os
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QLineEdit,
     QPushButton, QFileDialog, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, QElapsedTimer, pyqtSignal
 
 from ui.keypad import Keypad
 from core import dsp_interface as dsp
@@ -22,6 +34,7 @@ from core import audio_io
 
 SAMPLE_RATE = 8000
 TONE_DURATION = 0.25
+PROGRESS_TICK_MS = 33  # ~30 fps for the live-growing waveform/spectrum
 
 
 class _PlaybackThread(QThread):
@@ -42,13 +55,29 @@ class _PlaybackThread(QThread):
 
 class LeftPanel(QWidget):
 
-    # Emitted any time new audio samples exist for the analysis tabs to show:
-    # after playing a digit, playing a sequence, or importing a WAV file.
-    audio_ready = pyqtSignal(object, int)  # (numpy array, sample_rate)
+    # Fired ~30x/sec DURING playback with the samples played so far — lets
+    # the Waveform tab draw a "growing" waveform + spectrum in sync with audio.
+    playback_progress = pyqtSignal(object, int)  # (partial numpy array, fs)
+
+    # Fired once playback finishes (or immediately for Export/Import-without-
+    # play) with the COMPLETE array — triggers full spectrum + segmentation.
+    audio_ready = pyqtSignal(object, int)  # (full numpy array, fs)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._playback_thread = None
+
+        # State for whatever is currently playing / was last loaded
+        self._current_samples = None
+        self._current_fs = SAMPLE_RATE
+        self._imported_samples = None
+        self._imported_fs = SAMPLE_RATE
+        self._imported_path = None
+
+        self._playback_clock = QElapsedTimer()
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(PROGRESS_TICK_MS)
+        self._progress_timer.timeout.connect(self._on_progress_tick)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -126,6 +155,25 @@ class LeftPanel(QWidget):
         io_row.addWidget(self.import_btn)
         io_layout.addLayout(io_row)
 
+        # -- Loaded-file row: filename + its own Play button. This is what
+        # was missing before — importing a file loaded it, but nothing ever
+        # called _play() on it.
+        loaded_row = QHBoxLayout()
+        loaded_row.setSpacing(10)
+
+        self.loaded_file_label = QLabel("No file loaded")
+        self.loaded_file_label.setProperty("role", "muted")
+        self.loaded_file_label.setWordWrap(True)
+
+        self.play_imported_btn = QPushButton("▶ Play")
+        self.play_imported_btn.setProperty("role", "pill-outline")
+        self.play_imported_btn.setEnabled(False)
+        self.play_imported_btn.clicked.connect(self._on_play_imported_clicked)
+
+        loaded_row.addWidget(self.loaded_file_label, 1)
+        loaded_row.addWidget(self.play_imported_btn, 0)
+        io_layout.addLayout(loaded_row)
+
         outer.addWidget(io_card)
 
         # ---- Status line (feedback instead of crashing/blank clicks) ----
@@ -142,13 +190,8 @@ class LeftPanel(QWidget):
 
     def _on_digit_pressed(self, digit: str):
         self.entry.setText(self.entry.text() + digit)
-        self._play_single_digit(digit)
-
-    def _play_single_digit(self, digit: str):
         samples = dsp.generate_dtmf_tone(digit, fs=SAMPLE_RATE, duration=TONE_DURATION)
-        self._play(samples, SAMPLE_RATE)
-        self.audio_ready.emit(samples, SAMPLE_RATE)
-        self._set_status(f"Playing '{digit}'…")
+        self._start_playback(samples, SAMPLE_RATE, status=f"Playing '{digit}'…")
 
     def _on_play_clicked(self):
         digits = self.entry.text().strip()
@@ -156,9 +199,7 @@ class LeftPanel(QWidget):
             self._set_status("Type or tap a digit sequence first.")
             return
         samples = dsp.sequence_to_wav(digits, fs=SAMPLE_RATE, tone_duration=TONE_DURATION)
-        self._play(samples, SAMPLE_RATE)
-        self.audio_ready.emit(samples, SAMPLE_RATE)
-        self._set_status(f"Playing sequence: {digits}")
+        self._start_playback(samples, SAMPLE_RATE, status=f"Playing sequence: {digits}")
 
     def _on_export_clicked(self):
         digits = self.entry.text().strip()
@@ -176,21 +217,75 @@ class LeftPanel(QWidget):
         if not path:
             return
         samples, fs = audio_io.load_wav(path)
-        self.audio_ready.emit(samples, fs)
-        self._set_status(f"Loaded {path} ({len(samples)} samples @ {fs} Hz). "
-                          f"Decoding arrives in Phase 4/5.")
-        # NOTE for Phase 4/5: this is where we will hand `samples, fs` off to
-        # segment_tone_regions() / goertzel_decode() and push results to the
-        # right-hand analysis tabs.
 
-    # -- helpers ---------------------------------------------------------
+        self._imported_samples = samples
+        self._imported_fs = fs
+        self._imported_path = path
+        self.play_imported_btn.setEnabled(True)
+        self.loaded_file_label.setText(os.path.basename(path))
+
+        # Show the full waveform/spectrum right away (static), and separately
+        # let the person press Play to hear it with the live-growing view.
+        self.audio_ready.emit(samples, fs)
+        self._set_status(f"Loaded {os.path.basename(path)} "
+                          f"({len(samples)} samples @ {fs} Hz). Press Play to hear it.")
+
+    def _on_play_imported_clicked(self):
+        if self._imported_samples is None or len(self._imported_samples) == 0:
+            self._set_status("Import a WAV file first.")
+            return
+        self._start_playback(
+            self._imported_samples, self._imported_fs,
+            status=f"Playing {os.path.basename(self._imported_path)}…"
+        )
+
+    # -- playback + live view ---------------------------------------------
+
+    def _start_playback(self, samples, fs, status: str):
+        if samples is None or len(samples) == 0:
+            self._set_status("Nothing to play.")
+            return
+
+        audio_io.stop_playback()  # don't let two playbacks overlap
+
+        self._current_samples = samples
+        self._current_fs = fs
+
+        self._play(samples, fs)
+        self._playback_clock.start()
+        self._progress_timer.start()
+        self._set_status(status)
+
+    def _on_progress_tick(self):
+        if self._current_samples is None:
+            self._progress_timer.stop()
+            return
+
+        elapsed_s = self._playback_clock.elapsed() / 1000.0
+        pos = int(elapsed_s * self._current_fs)
+        total = len(self._current_samples)
+
+        if pos >= total:
+            self._progress_timer.stop()
+            self.audio_ready.emit(self._current_samples, self._current_fs)
+            return
+
+        self.playback_progress.emit(self._current_samples[:max(pos, 1)], self._current_fs)
 
     def _play(self, samples, fs):
         self._playback_thread = _PlaybackThread(samples, fs)
-        self._playback_thread.failed.connect(
-            lambda msg: self._set_status(f"Playback error: {msg}")
-        )
+        self._playback_thread.failed.connect(self._on_playback_failed)
         self._playback_thread.start()
+
+    def _on_playback_failed(self, msg: str):
+        # No audio device, driver issue, etc. Stop faking a live progress bar
+        # and just jump straight to showing the complete waveform/spectrum.
+        self._progress_timer.stop()
+        self._set_status(f"Playback error: {msg}")
+        if self._current_samples is not None:
+            self.audio_ready.emit(self._current_samples, self._current_fs)
+
+    # -- helpers ---------------------------------------------------------
 
     def _set_status(self, text: str):
         self.status_label.setText(text)

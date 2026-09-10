@@ -209,7 +209,39 @@ def segment_tone_regions(x: np.ndarray, fs: int) -> list[tuple[int, int]]:
     Tip: a simple energy threshold on short windows (e.g. RMS per 10ms
     frame) is a good starting point.
     """
-    raise NotImplementedError("Phase 4: implement segment_tone_regions()")
+    # Frame the signal into 10ms chunks
+    chunk_size = int(fs * 0.01)
+    chunks = [x[i:i + chunk_size] for i in range(0, len(x), chunk_size)]
+
+    # Calculate RMS per chunk
+    rms = []
+    for chunk in chunks:
+        rms.append(np.sqrt(np.mean(chunk ** 2)))
+
+    # Find a threshold
+    threshold = 0.2 * max(rms)
+
+    # Apply threshold, MERGING consecutive loud frames into one region each.
+    # We only create a tuple at a transition: silence->loud (start a region)
+    # or loud->silence (close the region). Everything in between just
+    # extends the region we're already tracking.
+    tone_regions = []
+    region_start = None  # frame index where the current loud stretch began
+
+    for i in range(len(rms)):
+        is_loud = rms[i] > threshold
+        if is_loud and region_start is None:
+            region_start = i                      # a new tone just started
+        elif not is_loud and region_start is not None:
+            tone_regions.append((region_start * chunk_size, i * chunk_size))
+            region_start = None                    # that tone just ended
+
+    # If the recording ends while still "loud" (tone runs to the last frame),
+    # close that final region using the actual signal length.
+    if region_start is not None:
+        tone_regions.append((region_start * chunk_size, len(x)))
+
+    return tone_regions
 
 
 # ---------------------------------------------------------------------------
