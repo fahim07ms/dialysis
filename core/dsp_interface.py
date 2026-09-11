@@ -51,6 +51,10 @@ for row_i, row in enumerate(KEYPAD_LAYOUT):
     for col_i, digit in enumerate(row):
         DIGIT_TO_FREQS[digit] = (LOW_FREQS[row_i], HIGH_FREQS[col_i])
 
+FREQ_TO_DIGIT = {
+    freqs: digit
+    for digit, freqs in DIGIT_TO_FREQS.items()
+}
 
 # ---------------------------------------------------------------------------
 # PHASE 1 — Tone synthesis
@@ -250,8 +254,6 @@ def segment_tone_regions(x: np.ndarray, fs: int) -> list[tuple[int, int]]:
 
 def goertzel_decode(x: np.ndarray, fs: int) -> str:
     """
-    TODO(you) — Phase 5
-
     Decode a full signal (tones + gaps) into a digit string using the
     Goertzel algorithm. This is the core of the whole app.
 
@@ -270,13 +272,34 @@ def goertzel_decode(x: np.ndarray, fs: int) -> str:
         3. Map that (f_low, f_high) pair back to a digit using
            DIGIT_TO_FREQS (just reverse the lookup).
     """
-    raise NotImplementedError("Phase 5: implement goertzel_decode()")
+    tone_regions = segment_tone_regions(x, fs)
+    decoded_digits = []
+
+    print(tone_regions)
+
+    for start, end in tone_regions:
+        x_region = x[start:end]
+
+        if len(x_region) == 0:
+            continue
+
+        low_powers = [goertzel_single_freq(x_region, fs, f) for f in LOW_FREQS]
+        high_powers = [goertzel_single_freq(x_region, fs, f) for f in HIGH_FREQS]
+
+        best_low = LOW_FREQS[int(np.argmax(low_powers))]
+        best_high = HIGH_FREQS[int(np.argmax(high_powers))]
+
+        digit = FREQ_TO_DIGIT.get((best_low, best_high))
+
+        if digit is not None:
+            decoded_digits.append(digit)
+
+
+    return "".join(decoded_digits)
 
 
 def goertzel_single_freq(x: np.ndarray, fs: int, target_freq: float) -> float:
     """
-    TODO(you) — Phase 5 (helper)
-
     Run the Goertzel algorithm for ONE target frequency and return its
     power/magnitude. goertzel_decode() will likely call this 8 times per
     tone region (once per DTMF frequency). This helper is also reused
@@ -291,7 +314,25 @@ def goertzel_single_freq(x: np.ndarray, fs: int, target_freq: float) -> float:
     Output:
         a single float: signal power at target_freq
     """
-    raise NotImplementedError("Phase 5: implement goertzel_single_freq()")
+    x = np.asarray(x, dtype=np.float64)
+    N = len(x)
+
+    if N == 0:
+        return 0.0
+
+    omega = 2 * np.pi * target_freq / fs
+    coeff = 2 * np.cos(omega)
+
+    s_prev2 = 0.0
+    s_prev1 = 0.0
+
+    for sample in x:
+        s = sample + coeff * s_prev1 - s_prev2
+        s_prev2 = s_prev1
+        s_prev1 = s
+
+    power = s_prev2 ** 2 + s_prev1 ** 2 - coeff * s_prev1 * s_prev2
+    return float(max(0, power))
 
 
 # ---------------------------------------------------------------------------

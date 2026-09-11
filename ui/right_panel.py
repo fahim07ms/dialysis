@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QTabWidget, QLabel
 from PyQt6.QtCore import Qt
 
 from ui.tabs.waveform_tab import WaveformTab
+from ui.tabs.decoder_tab import DecoderTab
 
 
 def _placeholder_tab(message: str) -> QWidget:
@@ -39,10 +40,8 @@ class RightPanel(QTabWidget):
             _placeholder_tab("Dynamic spectrogram arrives in Phase 7."),
             "Spectrogram"
         )
-        self.addTab(
-            _placeholder_tab("Goertzel / FFT decoder output arrives in Phase 5–6."),
-            "Decoder"
-        )
+        self.decoder_tab = DecoderTab()
+        self.addTab(self.decoder_tab, "Decoder")
         self.addTab(
             _placeholder_tab("Z-plane pole-zero view arrives in Phase 8."),
             "Pole-Zero"
