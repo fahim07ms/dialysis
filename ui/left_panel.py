@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, QTimer, QElapsedTimer, pyqtSignal
 
 from ui.keypad import Keypad
+from ui.decoder_panel import DecoderPanel
 from core import dsp_interface as dsp
 from core import audio_io
 
@@ -175,6 +176,12 @@ class LeftPanel(QWidget):
         io_layout.addLayout(loaded_row)
 
         outer.addWidget(io_card)
+
+        # ---- Card: decoder (moved here from a separate tab — decoding now
+        # sits right next to whatever produced the signal) ----
+        self.decoder_panel = DecoderPanel()
+        self.audio_ready.connect(self.decoder_panel.update_audio)
+        outer.addWidget(self.decoder_panel)
 
         # ---- Status line (feedback instead of crashing/blank clicks) ----
         self.status_label = QLabel("Ready.")

@@ -29,6 +29,7 @@ values so you can check your work without ever opening the app window.
 from __future__ import annotations
 import numpy as np
 import math
+import scipy.signal
 from .utils import bit_reverse, bit_reversal, pad_with_zeros
 
 # ---------------------------------------------------------------------------
@@ -51,10 +52,8 @@ for row_i, row in enumerate(KEYPAD_LAYOUT):
     for col_i, digit in enumerate(row):
         DIGIT_TO_FREQS[digit] = (LOW_FREQS[row_i], HIGH_FREQS[col_i])
 
-FREQ_TO_DIGIT = {
-    freqs: digit
-    for digit, freqs in DIGIT_TO_FREQS.items()
-}
+FREQ_TO_DIGIT = {freqs: digit for digit, freqs in DIGIT_TO_FREQS.items()}
+
 
 # ---------------------------------------------------------------------------
 # PHASE 1 — Tone synthesis
@@ -254,6 +253,8 @@ def segment_tone_regions(x: np.ndarray, fs: int) -> list[tuple[int, int]]:
 
 def goertzel_decode(x: np.ndarray, fs: int) -> str:
     """
+    TODO(you) — Phase 5
+
     Decode a full signal (tones + gaps) into a digit string using the
     Goertzel algorithm. This is the core of the whole app.
 
@@ -275,8 +276,6 @@ def goertzel_decode(x: np.ndarray, fs: int) -> str:
     tone_regions = segment_tone_regions(x, fs)
     decoded_digits = []
 
-    print(tone_regions)
-
     for start, end in tone_regions:
         x_region = x[start:end]
 
@@ -294,12 +293,13 @@ def goertzel_decode(x: np.ndarray, fs: int) -> str:
         if digit is not None:
             decoded_digits.append(digit)
 
-
     return "".join(decoded_digits)
 
 
 def goertzel_single_freq(x: np.ndarray, fs: int, target_freq: float) -> float:
     """
+    TODO(you) — Phase 5 (helper)
+
     Run the Goertzel algorithm for ONE target frequency and return its
     power/magnitude. goertzel_decode() will likely call this 8 times per
     tone region (once per DTMF frequency). This helper is also reused
@@ -348,7 +348,42 @@ def fft_decode(x: np.ndarray, fs: int) -> str:
 
     Inputs / Output: identical shape to goertzel_decode()
     """
-    raise NotImplementedError("Phase 6: implement fft_decode()")
+    tone_regions = segment_tone_regions(x, fs)
+    decoded_digits = []
+
+    # DTMF's two frequency bands are far apart (697-941 Hz vs 1209-1633 Hz),
+    # so a small margin around each band is enough to separate them cleanly
+    # when picking peaks out of the spectrum.
+    band_margin = 20  # Hz
+    low_band = (LOW_FREQS[0] - band_margin, LOW_FREQS[-1] + band_margin)
+    high_band = (HIGH_FREQS[0] - band_margin, HIGH_FREQS[-1] + band_margin)
+
+    for start, end in tone_regions:
+        x_region = x[start:end]
+        if len(x_region) == 0:
+            continue
+
+        freqs, mags = compute_spectrum(x_region, fs)
+
+        low_mask = (freqs >= low_band[0]) & (freqs <= low_band[1])
+        high_mask = (freqs >= high_band[0]) & (freqs <= high_band[1])
+        if not np.any(low_mask) or not np.any(high_mask):
+            continue  # region too short to resolve either band — skip it
+
+        # Raw FFT peak frequencies (won't land exactly on 697/770/... because
+        # of finite frequency resolution — that's what the snapping step below is for).
+        peak_low_freq = freqs[low_mask][np.argmax(mags[low_mask])]
+        peak_high_freq = freqs[high_mask][np.argmax(mags[high_mask])]
+
+        # Snap each raw peak to the nearest official DTMF frequency.
+        best_low = min(LOW_FREQS, key=lambda f: abs(f - peak_low_freq))
+        best_high = min(HIGH_FREQS, key=lambda f: abs(f - peak_high_freq))
+
+        digit = FREQ_TO_DIGIT.get((best_low, best_high))
+        if digit is not None:
+            decoded_digits.append(digit)
+
+    return "".join(decoded_digits)
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +406,8 @@ def compute_spectrogram(x: np.ndarray, fs: int) -> tuple[np.ndarray, np.ndarray,
 
     Tip: scipy.signal.spectrogram(x, fs) returns almost exactly this shape.
     """
-    raise NotImplementedError("Phase 7: implement compute_spectrogram()")
+    f, t, Sxx = scipy.signal.spectrogram(x, fs)
+    return t, f, Sxx
 
 
 # ---------------------------------------------------------------------------

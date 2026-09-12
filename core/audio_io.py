@@ -9,6 +9,7 @@ Kept Qt-free on purpose so it can be reused or tested outside the GUI too.
 """
 
 from __future__ import annotations
+import queue
 import numpy as np
 import sounddevice as sd
 from scipy.io import wavfile
@@ -53,3 +54,53 @@ def load_wav(path: str) -> tuple[np.ndarray, int]:
     if data.ndim > 1:
         data = data.mean(axis=1)  # collapse stereo to mono
     return data, fs
+
+
+class MicStream:
+    """
+    Continuous microphone capture, push-based: sounddevice calls our
+    callback from its own internal audio thread whenever a new chunk is
+    ready; we just drop each chunk into a thread-safe queue. Whoever wants
+    the audio (a QTimer on the UI thread, typically) calls read_available()
+    to drain whatever has arrived since the last check — non-blocking, so
+    it's safe to call from a UI timer without risking a freeze.
+
+    Deliberately Qt-free, same as the rest of this file.
+    """
+
+    def __init__(self, fs: int = 8000, channels: int = 1, blocksize: int = 800):
+        self.fs = fs
+        self._queue: queue.Queue = queue.Queue()
+        self._stream = sd.InputStream(
+            samplerate=fs,
+            channels=channels,
+            blocksize=blocksize,
+            dtype="float32",
+            callback=self._callback,
+        )
+
+    def _callback(self, indata, frames, time_info, status):
+        # indata arrives as float32 (the format devices actually support);
+        # convert to float64 here so everything downstream (segmentation,
+        # Goertzel, FFT) sees the same dtype it always has.
+        self._queue.put(indata[:, 0].astype(np.float64))
+
+    def start(self) -> None:
+        self._stream.start()
+
+    def stop(self) -> None:
+        self._stream.stop()
+        self._stream.close()
+
+    def read_available(self) -> np.ndarray:
+        """Pop everything currently queued and return it as one array.
+        Returns an empty array (not an error) if nothing new has arrived."""
+        chunks = []
+        while True:
+            try:
+                chunks.append(self._queue.get_nowait())
+            except queue.Empty:
+                break
+        if not chunks:
+            return np.array([])
+        return np.concatenate(chunks)
