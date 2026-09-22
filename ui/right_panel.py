@@ -1,32 +1,20 @@
 """
 right_panel.py
 ===============
-Right side of the app: the tabbed analysis area. Each remaining tab is a
-placeholder today — we'll fill them in one at a time as we work through
-the phases (Phase 7: Spectrogram, Phase 8: Pole-Zero, Phase 9:
-Impulse/Convolution, Phase 10: Noise & Sampling, Phase 11: Benchmark).
-
-The Decoder used to live here as its own tab — it's been moved into the
-LEFT panel (see ui/decoder_panel.py) so decoding sits right next to the
-controls that produced the signal, no tab-switching required.
+Right side of the app: the tabbed analysis area. All phases (0-11) are
+now built out — Waveform, Spectrogram, Decoder, Pole-Zero, Convolution,
+Noise & Sampling, and Benchmark are all real, functioning tabs.
 """
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QTabWidget, QLabel
-from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QTabWidget
 
 from ui.tabs.waveform_tab import WaveformTab
 from ui.tabs.spectrogram_tab import SpectrogramTab
-
-
-def _placeholder_tab(message: str) -> QWidget:
-    w = QWidget()
-    layout = QVBoxLayout(w)
-    label = QLabel(message)
-    label.setProperty("role", "muted")
-    label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    label.setWordWrap(True)
-    layout.addWidget(label)
-    return w
+from ui.tabs.pole_zero_tab import PoleZeroTab
+from ui.tabs.convolution_tab import ConvolutionTab
+from ui.tabs.noise_sampling_tab import NoiseSamplingTab
+from ui.tabs.benchmark_tab import BenchmarkTab
+from ui.decoder_panel import DecoderPanel
 
 
 class RightPanel(QTabWidget):
@@ -39,19 +27,13 @@ class RightPanel(QTabWidget):
         self.addTab(self.waveform_tab, "Waveform")
         self.spectrogram_tab = SpectrogramTab()
         self.addTab(self.spectrogram_tab, "Spectrogram")
-        self.addTab(
-            _placeholder_tab("Z-plane pole-zero view arrives in Phase 8."),
-            "Pole-Zero"
-        )
-        self.addTab(
-            _placeholder_tab("Impulse response + convolution view arrives in Phase 9."),
-            "Convolution"
-        )
-        self.addTab(
-            _placeholder_tab("Noise / sample-rate sliders arrive in Phase 10."),
-            "Noise && Sampling"
-        )
-        self.addTab(
-            _placeholder_tab("FFT vs Goertzel benchmark arrives in Phase 11."),
-            "Benchmark"
-        )
+        self.decoder_tab = DecoderPanel()
+        self.addTab(self.decoder_tab, "Decoder")
+        self.pole_zero_tab = PoleZeroTab()
+        self.addTab(self.pole_zero_tab, "Pole-Zero")
+        self.convolution_tab = ConvolutionTab()
+        self.addTab(self.convolution_tab, "Convolution")
+        self.noise_sampling_tab = NoiseSamplingTab()
+        self.addTab(self.noise_sampling_tab, "Noise && Sampling")
+        self.benchmark_tab = BenchmarkTab()
+        self.addTab(self.benchmark_tab, "Benchmark")

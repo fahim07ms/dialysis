@@ -49,11 +49,24 @@ class MainWindow(QMainWindow):
         # it's not meaningful mid-tone the way waveform/spectrum are).
         self.left_panel.audio_ready.connect(self.right_panel.spectrogram_tab.update_audio)
 
+        # The Decoder tab just remembers the latest full signal — it decodes
+        # on button press, not automatically on every audio_ready.
+        self.left_panel.audio_ready.connect(self.right_panel.decoder_tab.update_audio)
+
+        # Convolution tab needs the full signal too, to convolve against
+        # whichever resonator frequency is currently selected.
+        self.left_panel.audio_ready.connect(self.right_panel.convolution_tab.update_audio)
+
+        # Noise & Sampling and Benchmark both need the full signal to work
+        # from — same pattern as everything above.
+        self.left_panel.audio_ready.connect(self.right_panel.noise_sampling_tab.update_audio)
+        self.left_panel.audio_ready.connect(self.right_panel.benchmark_tab.update_audio)
+
         # While audio is actually playing, stream partial samples so the
         # waveform/spectrum appear to grow in sync with playback.
         self.left_panel.playback_progress.connect(self.right_panel.waveform_tab.update_audio_live)
 
-        # Live microphone decoding (in the Decoder card) reuses the same
+        # Live microphone decoding (in the Decoder tab) reuses the same
         # lightweight live-view path — it's already bounded/throttled inside
         # update_audio_live, so this is safe to wire up directly.
-        self.left_panel.decoder_panel.live_audio_ready.connect(self.right_panel.waveform_tab.update_audio_live)
+        self.right_panel.decoder_tab.live_audio_ready.connect(self.right_panel.waveform_tab.update_audio_live)

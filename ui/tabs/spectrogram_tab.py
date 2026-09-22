@@ -15,6 +15,7 @@ UI thread, whether it turns out fast or slow.
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
+from PyQt6.QtGui import QPainter
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from core import dsp_interface as dsp
@@ -76,6 +77,13 @@ class SpectrogramTab(QWidget):
         self.plot.setLabel("bottom", "Time", units="s")
         self.plot.setLabel("left", "Frequency", units="Hz")
         self.plot.setMenuEnabled(False)
+        # PlotWidget IS a QGraphicsView under the hood. Without this, the
+        # (relatively low-resolution) spectrogram array gets scaled up to
+        # fill the plot area using nearest-neighbor sampling — every array
+        # cell becomes a hard-edged rectangle, which is exactly the "blocky,
+        # not like a typical spectrogram" look. This makes it interpolate
+        # smoothly instead, like every other spectrogram viewer does.
+        self.plot.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
 
         self.image_item = pg.ImageItem()
         self.image_item.setColorMap(_teal_colormap())
@@ -129,9 +137,16 @@ class SpectrogramTab(QWidget):
         # like a flat blob, since tone energy dwarfs everything else.
         Sxx_db = 10 * np.log10(Sxx + 1e-12)
 
-        # ImageItem's default axis order expects array[x, y] i.e. shape
-        # (n_time, n_freq) — Sxx comes in as (n_freq, n_time), so transpose.
-        self.image_item.setImage(Sxx_db.T, autoLevels=True)
+        # Clip to a fixed dynamic range below the peak, rather than raw
+        # autoLevels (literal min/max). A spectrogram's floor is often
+        # extremely quiet (near -120dB from the 1e-12 epsilon above), and
+        # letting that set the bottom of the color scale compresses all the
+        # *meaningful* contrast into a narrow band near the top — this is
+        # why real spectrogram viewers show a fixed range (commonly ~60dB)
+        # below the loudest point instead.
+        DYNAMIC_RANGE_DB = 60
+        peak_db = np.max(Sxx_db)
+        self.image_item.setImage(Sxx_db.T, levels=(peak_db - DYNAMIC_RANGE_DB, peak_db))
         t0, t1 = float(t[0]), float(t[-1])
         f0, f1 = float(f[0]), float(f[-1])
         self.image_item.setRect(t0, f0, t1 - t0, f1 - f0)
