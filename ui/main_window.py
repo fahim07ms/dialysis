@@ -69,4 +69,13 @@ class MainWindow(QMainWindow):
         # Live microphone decoding (in the Decoder tab) reuses the same
         # lightweight live-view path — it's already bounded/throttled inside
         # update_audio_live, so this is safe to wire up directly.
-        self.right_panel.decoder_tab.live_audio_ready.connect(self.right_panel.waveform_tab.update_audio_live)
+        self.right_panel.decoder_tab.live_audio_ready.connect(
+            self.right_panel.waveform_tab.update_audio_live
+        )
+
+        # Spectrogram also gets live mic updates — SpectrogramTab.update_audio_live
+        # has its own debounce (only re-triggers when >= 2048 new samples arrived)
+        # so connecting directly here is safe.
+        self.right_panel.decoder_tab.live_audio_ready.connect(
+            self.right_panel.spectrogram_tab.update_audio_live
+        )

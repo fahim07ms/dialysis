@@ -119,6 +119,25 @@ class WaveformTab(QWidget):
         self.spectrum_curve = self.spectrum_plot.plot(pen=pg.mkPen(PRIMARY, width=2))
         self.spectrum_curve.setDownsampling(auto=True, method="peak")
         self.spectrum_curve.setClipToView(True)
+
+        # DTMF dual-tone frequency peak highlights (per spec).
+        # Teal vertical lines for the low (row) group, orange for the high
+        # (column) group — consistent with the decoder panel's bar colors.
+        self._dtmf_lines = []
+        for i, f in enumerate(dsp.LOW_FREQS + dsp.HIGH_FREQS):
+            color = PRIMARY if i < 4 else "#FF9430"
+            line = pg.InfiniteLine(
+                pos=f,
+                angle=90,   # vertical line at this frequency
+                pen=pg.mkPen(color, width=1.2,
+                             style=pg.QtCore.Qt.PenStyle.DashLine),
+                label=f"{f} Hz",
+                labelOpts={"position": 0.97, "color": color,
+                           "fill": (0, 0, 0, 100), "movable": False},
+            )
+            self.spectrum_plot.addItem(line)
+            self._dtmf_lines.append(line)
+
         layout.addWidget(self.spectrum_plot, 1)
 
         self.status_label = QLabel("Play or import a signal to see it here.")

@@ -385,7 +385,20 @@ def compute_spectrogram(x: np.ndarray, fs: int) -> tuple[np.ndarray, np.ndarray,
 
     Tip: scipy.signal.spectrogram(x, fs) returns almost exactly this shape.
     """
-    f, t, Sxx = scipy.signal.spectrogram(x, fs)
+    # Use a longer window (512 samples at 8 kHz = 64 ms) for good frequency
+    # resolution — the default 256-sample window gives only ~31 Hz/bin, which
+    # is too coarse to separate 697 Hz from 770 Hz (73 Hz apart). 512 gives
+    # ~16 Hz/bin at 8 kHz. 75% overlap (noverlap=384) gives smooth time axis.
+    # The Hann window is standard for spectrograms — suppresses leakage.
+    nperseg = min(512, len(x))
+    noverlap = nperseg * 3 // 4  # 75% overlap
+    f, t, Sxx = scipy.signal.spectrogram(
+        x, fs,
+        window='hann',
+        nperseg=nperseg,
+        noverlap=noverlap,
+        scaling='spectrum',
+    )
     return t, f, Sxx
 
 
@@ -631,8 +644,9 @@ DTMF_HOP_SECONDS = 0.005    # frame step: 5 ms -> 200 frames/s. Fine granularity
                             # split a tone (a dip only counts against a frame
                             # if it fails the gate or the dominance check —
                             # plain amplitude dips usually still "match").
-DTMF_LATCH_FRAMES = 8       # 8 * 5 ms = 40 ms of agreement -> ITU-T Q.24's
-                            # minimum recognisable tone duration
+DTMF_LATCH_FRAMES = 6       # 6 * 5 ms = 30 ms of agreement. Slightly below the
+                            # ITU-T Q.24 40 ms spec, but real mic capture has more
+                            # jitter; 8 frames missed digits that were valid.
 DTMF_RELEASE_FRAMES = 4     # 4 * 5 ms of disagreement -> tone over
 DTMF_RECENT_SECONDS = 1.5   # rolling raw-audio memory (for latch-time validation)
 
@@ -644,21 +658,25 @@ DTMF_FLOOR_LEAK_DB_PER_FRAME = 0.05  # floor may only RISE this fast: 0.05 dB
                                  # per frame = 10 dB/s at 200 fps. It can DROP
                                  # instantly (min-tracker), so a quiet room is
                                  # picked up immediately after a loud burst.
-DTMF_MIN_DOMINANCE_DEFAULT = 0.75  # (best row + best col) / total 8-bin power.
-                                 # Measured: real DTMF stays >= ~0.9, broadband
-                                 # noise sits around 0.25-0.5. Single strong
-                                 # non-DTMF tones can also pass this — that's
-                                 # what the twist check at latch is for.
+DTMF_MIN_DOMINANCE_DEFAULT = 0.60  # (best row + best col) / total 8-bin power.
+                                 # Lowered from 0.75: real rooms have background
+                                 # noise that spreads energy across bins, and
+                                 # cheap laptop mics can pull dominance below 0.75
+                                 # for genuine DTMF. Non-DTMF tones are still
+                                 # rejected by the twist + harmonic checks at latch.
 
 # --- Q.24-style validation (checked once, at latch) --------------------------
-DTMF_MAX_FORWARD_TWIST_DB = 8.0   # row tone may be at most 8 dB above column tone
-DTMF_MAX_REVERSE_TWIST_DB = 4.0   # column tone may be at most 4 dB above row tone
-DTMF_MIN_HARMONIC_DROP_DB = 12.0  # 2nd harmonic must be >= 12 dB below its
-                                  # fundamental — this is what rejects speech
-                                  # and most music
-DTMF_FREQ_TOLERANCE = 0.02        # +/-2% offset probes around each winner
-DTMF_FFT_TOLERANCE = 0.02         # FFT peak must land within 2% of nominal
-                                  # (Q.24 nominally +-1.8%; slightly lenient here)
+DTMF_MAX_FORWARD_TWIST_DB = 10.0  # row tone may be at most 10 dB above column tone
+                                   # (real phone handsets/laptop speakers have uneven
+                                   # frequency response; 8 dB was too tight for mic use)
+DTMF_MAX_REVERSE_TWIST_DB = 6.0   # column tone may be at most 6 dB above row tone
+DTMF_MIN_HARMONIC_DROP_DB = 6.0   # 2nd harmonic must be >= 6 dB below its fundamental.
+                                   # Real microphones + laptop speakers introduce non-
+                                   # linearities; 12 dB was calibrated for a perfect
+                                   # sine and too strict for practical hardware.
+                                   # Speech still fails (full harmonic stack, not one mild 2nd).
+DTMF_FREQ_TOLERANCE = 0.025       # +/-2.5% offset probes (relaxed from 2% for mic offset)
+DTMF_FFT_TOLERANCE = 0.025        # FFT peak must land within 2.5% of nominal
 DIAL_TONE_FREQS = (350.0, 440.0)  # PSTN dial tone — reject if it dominates
 DTMF_REJECT_COOLDOWN_S = 0.4      # min spacing between emitted reject events
 
