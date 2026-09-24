@@ -194,7 +194,7 @@ class DecoderPanel(QWidget):
         self._mic_timer.timeout.connect(self._on_mic_tick)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(16, 16, 16, 16)
 
         card = QFrame()
         card.setProperty("role", "card")
@@ -257,7 +257,7 @@ class DecoderPanel(QWidget):
         self.flash_label.setStyleSheet(
             "font-size: 40px; font-weight: 800; color: #3D8BFF; min-height: 48px;"
         )
-        self.save_debug_btn = QPushButton("💾 Save last 5 s (debug WAV)")
+        self.save_debug_btn = QPushButton("💾 Save Recording")
         self.save_debug_btn.setProperty("role", "pill-outline")
         self.save_debug_btn.clicked.connect(self._on_save_debug_clicked)
         flash_row.addWidget(self.save_debug_btn, 0)
@@ -349,6 +349,7 @@ class DecoderPanel(QWidget):
         self._mic_stream = stream
         self._mic_fs = stream.fs
         self._mic_display = np.zeros(0)
+        self._mic_recording = np.zeros(0)
         self._mic_transcript = ""
         self._last_event_text = ""
         self._tracker = dsp.DtmfTracker(
@@ -393,6 +394,7 @@ class DecoderPanel(QWidget):
             if len(new_samples) > 0:
                 cap = int(MIC_DISPLAY_SECONDS * self._mic_fs)
                 self._mic_display = np.concatenate([self._mic_display, new_samples])[-cap:]
+                self._mic_recording = np.concatenate([self._mic_recording, new_samples])
                 for event in self._tracker.push(new_samples):
                     self._handle_event(event)
 
@@ -488,12 +490,12 @@ class DecoderPanel(QWidget):
     def _on_save_debug_clicked(self):
         """Phase-0 style instrumentation: when something doesn't decode,
         save exactly what the mic delivered and inspect it offline."""
-        if self._mic_display is None or len(self._mic_display) == 0:
+        if not hasattr(self, '_mic_recording') or self._mic_recording is None or len(self._mic_recording) == 0:
             self.status_label.setText("No mic audio to save yet.")
             return
-        path = f"mic_debug_{time.strftime('%Y%m%d_%H%M%S')}.wav"
-        audio_io.save_wav(path, self._mic_display, self._mic_fs)
+        path = f"mic_recording_{time.strftime('%Y%m%d_%H%M%S')}.wav"
+        audio_io.save_wav(path, self._mic_recording, self._mic_fs)
         self.status_label.setText(
-            f"Saved {len(self._mic_display) / self._mic_fs:.1f} s @ "
+            f"Saved {len(self._mic_recording) / self._mic_fs:.1f} s @ "
             f"{self._mic_fs} Hz to {path}"
         )

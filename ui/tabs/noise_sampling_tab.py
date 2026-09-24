@@ -26,7 +26,7 @@ throttled to "once you've picked a value."
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QFrame
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QFrame, QPushButton
 )
 from PyQt6.QtGui import QPainter
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
@@ -168,6 +168,13 @@ class NoiseSamplingTab(QWidget):
         self.result_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.result_label.setStyleSheet("font-size: 24px; font-weight: 800; letter-spacing: 3px;")
         result_layout.addWidget(self.result_label)
+
+        # -- Export Button --
+        self.export_btn = QPushButton("Export Processed WAV")
+        self.export_btn.setProperty("role", "pill-outline")
+        self.export_btn.clicked.connect(self._on_export_clicked)
+        result_layout.addWidget(self.export_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
         layout.addWidget(result_card)
 
         self.status_label = QLabel("Play or import a signal to start breaking it.")
@@ -180,6 +187,17 @@ class NoiseSamplingTab(QWidget):
 
     def _on_fs_value_changed(self, value: int):
         self.fs_value_label.setText(f"{value} Hz")
+
+    def _on_export_clicked(self):
+        if not hasattr(self, '_processed_samples') or self._processed_samples is None or len(self._processed_samples) == 0:
+            self.status_label.setText("No processed audio to export.")
+            return
+        from PyQt6.QtWidgets import QFileDialog
+        from core import audio_io
+        path, _ = QFileDialog.getSaveFileName(self, "Export Processed WAV", "processed.wav", "WAV files (*.wav)")
+        if path:
+            audio_io.save_wav(path, self._processed_samples, self.fs_slider.value())
+            self.status_label.setText(f"Exported processed audio to {path}")
 
     def update_audio(self, samples: np.ndarray, fs: int):
         self._x = np.asarray(samples)
@@ -218,6 +236,8 @@ class NoiseSamplingTab(QWidget):
         if err:
             self.status_label.setText(err)
             return
+
+        self._processed_samples = processed
 
         if freqs is not None:
             self.spectrum_curve.setData(freqs, mags)

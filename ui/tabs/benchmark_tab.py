@@ -140,16 +140,42 @@ class BenchmarkTab(QWidget):
         g, f = results["goertzel"], results["fft"]
 
         self.time_plot.clear()
+        # Goertzel Bar (Blue)
         self.time_plot.addItem(pg.BarGraphItem(
-            x=[0, 1], height=[g["time_ms"], f["time_ms"]], width=0.6,
+            x=[0], height=[g["time_ms"]], width=0.6,
             brush=pg.mkBrush(PRIMARY), pen=pg.mkPen(PRIMARY_DIM)
         ))
+        text_g_time = pg.TextItem(f"{g['time_ms']:.2f}", anchor=(0.5, 1.2), color=TEXT_MUTED)
+        text_g_time.setPos(0, g["time_ms"])
+        self.time_plot.addItem(text_g_time)
+
+        # FFT Bar (Orange)
+        self.time_plot.addItem(pg.BarGraphItem(
+            x=[1], height=[f["time_ms"]], width=0.6,
+            brush=pg.mkBrush("#FF9430"), pen=pg.mkPen(PRIMARY_DIM)
+        ))
+        text_f_time = pg.TextItem(f"{f['time_ms']:.2f}", anchor=(0.5, 1.2), color=TEXT_MUTED)
+        text_f_time.setPos(1, f["time_ms"])
+        self.time_plot.addItem(text_f_time)
 
         self.mem_plot.clear()
+        # Goertzel Bar (Blue)
         self.mem_plot.addItem(pg.BarGraphItem(
-            x=[0, 1], height=[g["memory_kb"], f["memory_kb"]], width=0.6,
+            x=[0], height=[g["memory_kb"]], width=0.6,
             brush=pg.mkBrush(PRIMARY), pen=pg.mkPen(PRIMARY_DIM)
         ))
+        text_g_mem = pg.TextItem(f"{g['memory_kb']:.1f}", anchor=(0.5, 1.2), color=TEXT_MUTED)
+        text_g_mem.setPos(0, g["memory_kb"])
+        self.mem_plot.addItem(text_g_mem)
+
+        # FFT Bar (Orange)
+        self.mem_plot.addItem(pg.BarGraphItem(
+            x=[1], height=[f["memory_kb"]], width=0.6,
+            brush=pg.mkBrush("#FF9430"), pen=pg.mkPen(PRIMARY_DIM)
+        ))
+        text_f_mem = pg.TextItem(f"{f['memory_kb']:.1f}", anchor=(0.5, 1.2), color=TEXT_MUTED)
+        text_f_mem.setPos(1, f["memory_kb"])
+        self.mem_plot.addItem(text_f_mem)
 
         agree = g["result"] == f["result"]
         self.agreement_label.setText(

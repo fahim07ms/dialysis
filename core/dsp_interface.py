@@ -666,10 +666,10 @@ DTMF_MIN_DOMINANCE_DEFAULT = 0.60  # (best row + best col) / total 8-bin power.
                                  # rejected by the twist + harmonic checks at latch.
 
 # --- Q.24-style validation (checked once, at latch) --------------------------
-DTMF_MAX_FORWARD_TWIST_DB = 10.0  # row tone may be at most 10 dB above column tone
+DTMF_MAX_FORWARD_TWIST_DB = 15.0  # row tone may be at most 15 dB above column tone
                                    # (real phone handsets/laptop speakers have uneven
-                                   # frequency response; 8 dB was too tight for mic use)
-DTMF_MAX_REVERSE_TWIST_DB = 6.0   # column tone may be at most 6 dB above row tone
+                                   # frequency response; 10 dB was too tight for mic use)
+DTMF_MAX_REVERSE_TWIST_DB = 12.0   # column tone may be at most 12 dB above row tone
 DTMF_MIN_HARMONIC_DROP_DB = 6.0   # 2nd harmonic must be >= 6 dB below its fundamental.
                                    # Real microphones + laptop speakers introduce non-
                                    # linearities; 12 dB was calibrated for a perfect
