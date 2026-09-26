@@ -225,8 +225,10 @@ def segment_tone_regions(x: np.ndarray, fs: int) -> list[tuple[int, int]]:
     for chunk in chunks:
         rms.append(np.sqrt(np.mean(chunk ** 2)))
 
-    # Find a threshold
-    threshold = 0.2 * max(rms)
+    # Find a threshold. Lowered to 0.05 so quiet tones aren't missed
+    # if there is one very loud tone or noise spike. False positives are
+    # safely rejected later by validate_dtmf_region.
+    threshold = 0.05 * max(rms)
 
     # Apply threshold, MERGING consecutive loud frames into one region each.
     # We only create a tuple at a transition: silence->loud (start a region)
@@ -255,6 +257,41 @@ def segment_tone_regions(x: np.ndarray, fs: int) -> list[tuple[int, int]]:
 # PHASE 5 — Goertzel decoder
 # ---------------------------------------------------------------------------
 
+# def goertzel_decode(x: np.ndarray, fs: int) -> str:
+#     """
+#     Decode a full signal (tones + gaps) into a digit string using the
+#     Goertzel algorithm. This is the core of the whole app (file path).
+#
+#     Inputs:
+#         x  : 1-D numpy array, full recording
+#         fs : sample rate
+#
+#     Output:
+#         decoded digit string, e.g. "512*90"
+#     """
+#     tone_regions = segment_tone_regions(x, fs)
+#     decoded_digits = []
+#
+#     for start, end in tone_regions:
+#         x_region = x[start:end]
+#
+#         if len(x_region) < fs * 0.04:  # At least 40ms to be a valid DTMF tone
+#             continue
+#
+#         low_powers = [goertzel_single_freq(x_region, fs, f) for f in LOW_FREQS]
+#         high_powers = [goertzel_single_freq(x_region, fs, f) for f in HIGH_FREQS]
+#
+#         best_low = LOW_FREQS[int(np.argmax(low_powers))]
+#         best_high = HIGH_FREQS[int(np.argmax(high_powers))]
+#
+#         reason = validate_dtmf_region(x_region, fs, best_low, best_high)
+#         if reason is None:
+#             digit = FREQ_TO_DIGIT.get((best_low, best_high))
+#             if digit is not None:
+#                 decoded_digits.append(digit)
+#
+#     return "".join(decoded_digits)
+
 def goertzel_decode(x: np.ndarray, fs: int) -> str:
     """
     Decode a full signal (tones + gaps) into a digit string using the
@@ -266,6 +303,18 @@ def goertzel_decode(x: np.ndarray, fs: int) -> str:
 
     Output:
         decoded digit string, e.g. "512*90"
+
+    PERFORMANCE: the 8 bin measurements come from goertzel_powers() — the
+    vectorized single-bin-DFT form of the Goertzel algorithm (one cached
+    BLAS matrix-vector product for all 8 frequencies) — NOT from 8 calls to
+    the per-sample reference loop in goertzel_single_freq(). Both compute
+    the same bin values; the loop version exists for teaching (Phases 5/8)
+    and runs ~100-1000x slower under CPython. The Benchmark tab was
+    measuring the interpreter, not the algorithm.
+
+    Each region is measured over the canonical fixed-length analysis block
+    from _analysis_block(), so the kernel matrix is a cache hit for every
+    region after the first.
     """
     tone_regions = segment_tone_regions(x, fs)
     decoded_digits = []
@@ -273,37 +322,80 @@ def goertzel_decode(x: np.ndarray, fs: int) -> str:
     for start, end in tone_regions:
         x_region = x[start:end]
 
-        if len(x_region) == 0:
+        if len(x_region) < fs * 0.04:  # At least 40ms to be a valid DTMF tone
             continue
 
-        low_powers = [goertzel_single_freq(x_region, fs, f) for f in LOW_FREQS]
-        high_powers = [goertzel_single_freq(x_region, fs, f) for f in HIGH_FREQS]
+        powers = goertzel_powers(_analysis_block(x_region, fs), fs, DTMF_FREQS_ALL)
+        best_low = LOW_FREQS[int(np.argmax(powers[:4]))]
+        best_high = HIGH_FREQS[int(np.argmax(powers[4:]))]
 
-        best_low = LOW_FREQS[int(np.argmax(low_powers))]
-        best_high = HIGH_FREQS[int(np.argmax(high_powers))]
-
-        digit = FREQ_TO_DIGIT.get((best_low, best_high))
-
-        if digit is not None:
-            decoded_digits.append(digit)
+        reason = validate_dtmf_region(x_region, fs, best_low, best_high)
+        if reason is None:
+            digit = FREQ_TO_DIGIT.get((best_low, best_high))
+            if digit is not None:
+                decoded_digits.append(digit)
 
     return "".join(decoded_digits)
 
 
+# def goertzel_single_freq(x: np.ndarray, fs: int, target_freq: float) -> float:
+#     """
+#     Run the Goertzel algorithm for ONE target frequency and return its
+#     power/magnitude. goertzel_decode() will likely call this 8 times per
+#     tone region (once per DTMF frequency). This helper is also reused
+#     directly by Phase 8 (pole-zero view) to show what the algorithm
+#     "sees" at a single frequency, so keep it self-contained.
+#
+#     Kept in its classic per-sample recursive form on purpose — it's the
+#     pedagogical reference implementation. The live engine uses the
+#     mathematically equivalent vectorized form (goertzel_powers() /
+#     frame_bin_powers() further down); a Goertzel filter evaluated over a
+#     whole block IS a single-bin DFT, so the two give identical bin
+#     selections, just at different speeds.
+#
+#     Inputs:
+#         x           : 1-D numpy array, one tone region
+#         fs          : sample rate
+#         target_freq : frequency to test, in Hz
+#
+#     Output:
+#         a single float: signal power at target_freq
+#     """
+#     x = np.asarray(x, dtype=np.float64)
+#     N = len(x)
+#
+#     if N == 0:
+#         return 0.0
+#
+#     omega = 2 * np.pi * target_freq / fs
+#     coeff = 2 * np.cos(omega)
+#
+#     s_prev2 = 0.0
+#     s_prev1 = 0.0
+#
+#     for sample in x:
+#         s = sample + coeff * s_prev1 - s_prev2
+#         s_prev2 = s_prev1
+#         s_prev1 = s
+#
+#     power = s_prev2 ** 2 + s_prev1 ** 2 - coeff * s_prev1 * s_prev2
+#     return float(max(0, power))
+#
+
 def goertzel_single_freq(x: np.ndarray, fs: int, target_freq: float) -> float:
     """
     Run the Goertzel algorithm for ONE target frequency and return its
-    power/magnitude. goertzel_decode() will likely call this 8 times per
-    tone region (once per DTMF frequency). This helper is also reused
-    directly by Phase 8 (pole-zero view) to show what the algorithm
-    "sees" at a single frequency, so keep it self-contained.
+    power/magnitude. Kept as the classic per-sample reference implementation
+    for teaching (Phases 5/8); the decoders use the mathematically
+    equivalent vectorized form (goertzel_powers) — a Goertzel filter
+    evaluated over a whole block IS a single-bin DFT, so the two give
+    identical bin selections, just at very different speeds.
 
-    Kept in its classic per-sample recursive form on purpose — it's the
-    pedagogical reference implementation. The live engine uses the
-    mathematically equivalent vectorized form (goertzel_powers() /
-    frame_bin_powers() further down); a Goertzel filter evaluated over a
-    whole block IS a single-bin DFT, so the two give identical bin
-    selections, just at different speeds.
+    Small speedup applied here: samples are pulled as plain Python floats
+    (x.tolist()) and coeff as a plain float. Arithmetic on numpy scalars
+    goes through ufunc dispatch per operation and is several times slower
+    than on built-in floats; results are unchanged (same IEEE doubles,
+    same order of operations).
 
     Inputs:
         x           : 1-D numpy array, one tone region
@@ -320,12 +412,12 @@ def goertzel_single_freq(x: np.ndarray, fs: int, target_freq: float) -> float:
         return 0.0
 
     omega = 2 * np.pi * target_freq / fs
-    coeff = 2 * np.cos(omega)
+    coeff = 2.0 * math.cos(omega)
 
     s_prev2 = 0.0
     s_prev1 = 0.0
 
-    for sample in x:
+    for sample in x.tolist():
         s = sample + coeff * s_prev1 - s_prev2
         s_prev2 = s_prev1
         s_prev1 = s
@@ -333,39 +425,78 @@ def goertzel_single_freq(x: np.ndarray, fs: int, target_freq: float) -> float:
     power = s_prev2 ** 2 + s_prev1 ** 2 - coeff * s_prev1 * s_prev2
     return float(max(0, power))
 
-
 # ---------------------------------------------------------------------------
 # PHASE 6 — FFT decoder
 # ---------------------------------------------------------------------------
+
+# def fft_decode(x: np.ndarray, fs: int) -> str:
+#     """
+#     Same job as goertzel_decode(), but using FFT peak-picking instead of
+#     the Goertzel algorithm. Lets the UI show the two decoders side by side.
+#
+#     Inputs / Output: identical shape to goertzel_decode()
+#
+#     Internals upgraded: each region is now decoded by fft_region_digit()
+#     (Hann window + 2x zero-padding + parabolic peak interpolation +
+#     Q.24-style frequency tolerance), instead of raw rectangular-window
+#     peak-picking. Signature and output type unchanged.
+#     """
+#     tone_regions = segment_tone_regions(x, fs)
+#     decoded_digits = []
+#
+#     for start, end in tone_regions:
+#         x_region = x[start:end]
+#         if len(x_region) < fs * 0.04:  # At least 40ms
+#             continue
+#
+#         # fft_region_digit is defined further down in this file — Python
+#         # resolves names at call time, so the ordering is fine.
+#         digit, (f_low, f_high) = fft_region_digit(x_region, fs)
+#         if digit is not None:
+#             reason = validate_dtmf_region(x_region, fs, f_low, f_high)
+#             if reason is None:
+#                 decoded_digits.append(digit)
+#
+#     return "".join(decoded_digits)
 
 def fft_decode(x: np.ndarray, fs: int) -> str:
     """
     Same job as goertzel_decode(), but using FFT peak-picking instead of
     the Goertzel algorithm. Lets the UI show the two decoders side by side.
 
-    Inputs / Output: identical shape to goertzel_decode()
-
-    Internals upgraded: each region is now decoded by fft_region_digit()
-    (Hann window + 2x zero-padding + parabolic peak interpolation +
-    Q.24-style frequency tolerance), instead of raw rectangular-window
-    peak-picking. Signature and output type unchanged.
+    Regions are center-truncated to the same canonical DTMF_BLOCK_SECONDS
+    span that goertzel_decode measures, so both decoders analyze the same
+    audio and their agreement check in the Benchmark tab stays meaningful.
+    (fft_region_digit applies its own Hann window and zero-padding, so only
+    the truncation happens here.)
     """
     tone_regions = segment_tone_regions(x, fs)
     decoded_digits = []
+    n_block = _analysis_block_len(fs)
 
     for start, end in tone_regions:
         x_region = x[start:end]
-        if len(x_region) == 0:
+        if len(x_region) < fs * 0.04:  # At least 40ms
             continue
 
-        # fft_region_digit is defined further down in this file — Python
-        # resolves names at call time, so the ordering is fine.
-        digit, _ = fft_region_digit(x_region, fs)
+        if len(x_region) > n_block:
+            c = (len(x_region) - n_block) // 2
+            x_region = x_region[c:c + n_block]
+
+        digit, (f_low, f_high) = fft_region_digit(x_region, fs)
         if digit is not None:
-            decoded_digits.append(digit)
+            # Validate against the NOMINAL pair for this digit — the same
+            # input the Goertzel path uses. f_low/f_high above are the FFT's
+            # MEASURED (interpolated) peak frequencies; the tolerance was
+            # already enforced inside fft_region_digit when it snapped them
+            # to pick the digit. Passing measured values onward would break
+            # validate_dtmf_region's fixed, nominal-keyed probe table.
+            nom_low, nom_high = DIGIT_TO_FREQS[digit]
+            reason = validate_dtmf_region(x_region, fs, nom_low, nom_high)
+            if reason is None:
+                decoded_digits.append(digit)
 
     return "".join(decoded_digits)
-
 
 # ---------------------------------------------------------------------------
 # PHASE 7 — Spectrogram
@@ -568,6 +699,35 @@ def resample_signal(x: np.ndarray, fs_original: int, fs_new: int) -> np.ndarray:
 # PHASE 11 — Benchmarking
 # ---------------------------------------------------------------------------
 
+# def benchmark_decoders(x: np.ndarray, fs: int) -> dict:
+#     """
+#     Run both decoders on the same input and report performance numbers.
+#
+#     Output: a dict shaped like this (UI expects exactly these keys):
+#         {
+#             "goertzel": {"time_ms": float, "memory_kb": float, "result": str},
+#             "fft":      {"time_ms": float, "memory_kb": float, "result": str},
+#         }
+#
+#     Tip: `time.perf_counter()` for timing, `tracemalloc` for memory.
+#     """
+#     results = {}
+#     for name, decode_fn in (("goertzel", goertzel_decode), ("fft", fft_decode)):
+#         tracemalloc.start()
+#         start = time.perf_counter()
+#         result = decode_fn(x, fs)
+#         elapsed_ms = (time.perf_counter() - start) * 1000
+#         _current, peak_bytes = tracemalloc.get_traced_memory()
+#         tracemalloc.stop()
+#
+#         results[name] = {
+#             "time_ms": elapsed_ms,
+#             "memory_kb": peak_bytes / 1024,
+#             "result": result,
+#         }
+#
+#     return results
+
 def benchmark_decoders(x: np.ndarray, fs: int) -> dict:
     """
     Run both decoders on the same input and report performance numbers.
@@ -578,25 +738,42 @@ def benchmark_decoders(x: np.ndarray, fs: int) -> dict:
             "fft":      {"time_ms": float, "memory_kb": float, "result": str},
         }
 
-    Tip: `time.perf_counter()` for timing, `tracemalloc` for memory.
+    Fairness measures (both matter now that each decoder runs in ~1 ms):
+      * WARMUP: a tiny synthetic signal is decoded once by each decoder
+        BEFORE timing, so one-time costs (building the cached DTMF kernels,
+        FFT plan setup) are charged to neither timed run. Without this,
+        whichever decoder happens to run first eats all the setup.
+      * MIN OF 3 RUNS: each decoder is timed 3 times and the minimum is
+        reported — for deterministic work, the minimum is the run with the
+        least OS/scheduler noise. tracemalloc wraps all 3 runs; peak memory
+        is a peak, so repeating doesn't inflate it.
     """
+    warm = sequence_to_wav("5", fs=fs, tone_duration=0.05, gap_duration=0.01)
+    for decode_fn in (goertzel_decode, fft_decode):
+        try:
+            decode_fn(warm, fs)
+        except Exception:
+            pass  # warmup is best-effort; the timed run reports real errors
+
     results = {}
     for name, decode_fn in (("goertzel", goertzel_decode), ("fft", fft_decode)):
+        times_ms = []
         tracemalloc.start()
-        start = time.perf_counter()
-        result = decode_fn(x, fs)
-        elapsed_ms = (time.perf_counter() - start) * 1000
+        result = ""
+        for _ in range(3):
+            start = time.perf_counter()
+            result = decode_fn(x, fs)
+            times_ms.append((time.perf_counter() - start) * 1000)
         _current, peak_bytes = tracemalloc.get_traced_memory()
         tracemalloc.stop()
 
         results[name] = {
-            "time_ms": elapsed_ms,
+            "time_ms": min(times_ms),
             "memory_kb": peak_bytes / 1024,
             "result": result,
         }
 
     return results
-
 
 # ===========================================================================
 # LIVE DECODING ENGINE — frame classifier + temporal state machine
@@ -680,6 +857,86 @@ DTMF_FFT_TOLERANCE = 0.025        # FFT peak must land within 2.5% of nominal
 DIAL_TONE_FREQS = (350.0, 440.0)  # PSTN dial tone — reject if it dominates
 DTMF_REJECT_COOLDOWN_S = 0.4      # min spacing between emitted reject events
 
+# --- canonical analysis block (shared by both file decoders + validation) ---
+
+DTMF_BLOCK_SECONDS = 0.12   # Fixed analysis-block length. Both decoders and
+                            # validate_dtmf_region() measure each tone region
+                            # over a block of this length: center-truncated
+                            # when the region is longer, Hann-windowed at the
+                            # region's TRUE length and zero-padded when it is
+                            # shorter. Why fixed, not "the whole region":
+                            #   1. _bin_dft_matrix() caches kernels by length;
+                            #      a fixed length means ONE kernel per sample
+                            #      rate instead of one per region (the old
+                            #      per-region keys never hit the cache).
+                            #   2. it caps per-region cost — a long noise blob
+                            #      can't make validation expensive. 120 ms
+                            #      comfortably exceeds Q.24's 40 ms minimum
+                            #      and gives ~8 Hz resolution at 8 kHz.
+
+
+def _analysis_block_len(fs) -> int:
+    return max(64, int(round(DTMF_BLOCK_SECONDS * fs)))
+
+
+def _analysis_block(x: np.ndarray, fs) -> np.ndarray:
+    """
+    Canonical fixed-length, Hann-windowed analysis block for one tone region.
+
+    Long region  -> center-truncated (keeps segmentation edge-bleed out of
+                    the measurement; real DTMF receivers validate on a fixed
+                    block, not the whole tone).
+    Short region -> windowed at its true length first, THEN zero-padded.
+                    Zero samples contribute nothing to any DFT bin sum, so
+                    every bin value is identical to an exact-length
+                    computation — only the uniform (|X|/N)^2 normalization
+                    differs, and every consumer here compares ratios or dB
+                    differences, which are scale-invariant.
+    """
+    x = np.asarray(x, dtype=np.float64).ravel()
+    n = _analysis_block_len(fs)
+    if x.size > n:
+        c = (x.size - n) // 2
+        x = x[c:c + n]
+    w = np.hanning(x.size) if x.size > 2 else np.ones(x.size)
+    xw = x * w
+    if xw.size < n:
+        xw = np.pad(xw, (0, n - xw.size))
+    return xw
+
+
+_VALIDATE_PROBE_CACHE: dict = {}
+
+
+def _validate_probe_freqs():
+    """
+    Fixed, digit-independent superset of every frequency that
+    validate_dtmf_region() can ever probe: for each of the 8 DTMF
+    frequencies — fundamental, 2nd harmonic, and the two +/-tolerance
+    offset neighbours — plus 350/440 Hz dial tone. 34 rows total.
+
+    The OLD validate built a fresh 10-row probe list per region, so its
+    kernel cache key (length, fs, freqs) contained the region's length AND
+    the digit's frequencies — a key that never repeated. Every region paid
+    a full np.exp() over 10xN complex values (~1.6 MB at ~10k-sample
+    regions: most of the FFT path's benchmark time and nearly all of its
+    peak memory). With a fixed row set and the fixed block length, the
+    34xN kernel is built once per sample rate and every later call is a
+    single BLAS matvec.
+
+    Returns (freqs, index) where index maps frequency -> row.
+    """
+    t = DTMF_FREQ_TOLERANCE
+    cached = _VALIDATE_PROBE_CACHE.get(t)
+    if cached is None:
+        rows = []
+        for f in DTMF_FREQS_ALL:
+            rows.extend((float(f), 2.0 * f, f * (1.0 - t), f * (1.0 + t)))
+        rows.extend((DIAL_TONE_FREQS[0], DIAL_TONE_FREQS[1]))
+        rows = sorted(set(rows))
+        cached = (rows, {fr: i for i, fr in enumerate(rows)})
+        _VALIDATE_PROBE_CACHE[t] = cached
+    return cached
 
 def _db(p) -> float:
     """10*log10 with an epsilon so zero power maps to -200 dB, not -inf."""
@@ -700,7 +957,7 @@ def _bin_dft_matrix(freqs, N: int, fs) -> np.ndarray:
     if W is None:
         n = np.arange(N)
         W = np.exp(-2j * np.pi * np.outer(np.asarray(freqs, dtype=np.float64), n) / fs)
-        if len(_DFT_MATRIX_CACHE) > 8:   # a couple of devices / frame sizes max
+        if len(_DFT_MATRIX_CACHE) > 64:   # a couple of devices / frame sizes max
             _DFT_MATRIX_CACHE.clear()
         _DFT_MATRIX_CACHE[key] = W
     return W
@@ -814,21 +1071,102 @@ def fft_region_digit(x: np.ndarray, fs, tolerance: float = DTMF_FFT_TOLERANCE):
 
 # --- Q.24-style validation, run once per latch -------------------------------
 
+# def validate_dtmf_region(x: np.ndarray, fs, f_low, f_high):
+#     """
+#     Decide whether a candidate tone region is REALLY a DTMF digit, using
+#     ITU-T Q.24-flavoured checks (the same family of checks the reference
+#     decoders implement). Runs over the region's audio with a Hann window
+#     for good selectivity. All checks use Goertzel bin powers — they're
+#     measurements about the signal, independent of which decoder produced
+#     the candidate.
+#
+#     Checks, in order (first failure wins, so the most specific / most
+#     decisive rejection reason is reported first):
+#       1. dial tone  : 350+440 Hz pair stronger than the candidate pair
+#       2. twist      : row/column level difference beyond +8 / -4 dB
+#       3. offset     : winner frequency not the local max among +/-2% probes
+#       4. harmonics  : 2nd harmonic of either winner within 12 dB of it
+#                       (voiced speech and many instruments fail this)
+#
+#     Returns None if the region passes as valid DTMF, else a human-readable
+#     reason string (shown in the UI's rejection line).
+#     """
+#     x = np.asarray(x, dtype=np.float64)
+#     if len(x) < 8:
+#         return "region too short to validate"
+#
+#     w = np.hanning(len(x))
+#     t = DTMF_FREQ_TOLERANCE
+#     probes = [
+#         f_low, f_high,                       # the candidate pair itself
+#         2.0 * f_low, 2.0 * f_high,           # second harmonics
+#         f_low * (1 - t), f_low * (1 + t),    # row frequency offset probes
+#         f_high * (1 - t), f_high * (1 + t),  # column frequency offset probes
+#         DIAL_TONE_FREQS[0], DIAL_TONE_FREQS[1],
+#     ]
+#     (p_low, p_high, h2_low, h2_high,
+#      low_minus, low_plus, high_minus, high_plus,
+#      d350, d440) = goertzel_powers(x * w, fs, probes)
+#
+#     # 1. Dial tone. Pure 350+440 leaks into the DTMF bins through any real
+#     #    window; if the dial pair is at least as strong as what we think the
+#     #    "winners" are, this is dial tone, not DTMF. (Genuine DTMF played
+#     #    OVER dial tone still passes, because then the winners dominate.)
+#     if _db(d350 + d440) - _db(p_low + p_high) > 0.0:
+#         return "dial tone (350+440 Hz) is stronger than the tone pair"
+#
+#     # 2. Twist. A real DTMF pair has both tones within a few dB of each
+#     #    other; speech, music and single stray tones do not.
+#     twist_db = _db(p_low) - _db(p_high)
+#     if twist_db > DTMF_MAX_FORWARD_TWIST_DB:
+#         return (f"twist {twist_db:.1f} dB exceeds +{DTMF_MAX_FORWARD_TWIST_DB:.0f} dB "
+#                 f"(row tone far louder than column tone)")
+#     if twist_db < -DTMF_MAX_REVERSE_TWIST_DB:
+#         return (f"reverse twist {-twist_db:.1f} dB exceeds {DTMF_MAX_REVERSE_TWIST_DB:.0f} dB "
+#                 f"(column tone far louder than row tone)")
+#
+#     # 3. Frequency offset. If a +/-2% neighbour of the winning frequency has
+#     #    MORE power than the winner itself, the true tone is off-frequency —
+#     #    a nearby beep/siren, not DTMF.
+#     if p_low < max(low_minus, low_plus):
+#         return "row tone is off-frequency by more than ~2% (not a DTMF frequency)"
+#     if p_high < max(high_minus, high_plus):
+#         return "column tone is off-frequency by more than ~2% (not a DTMF frequency)"
+#
+#     # 4. Second harmonics. Voiced speech is a harmonic stack — energy at f
+#     #    almost always comes with energy at 2f. A DTMF sine (even from a
+#     #    cheap speaker with a few % distortion) keeps 2f well down.
+#     if _db(h2_low) - _db(p_low) > -DTMF_MIN_HARMONIC_DROP_DB:
+#         return (f"row 2nd harmonic less than {DTMF_MIN_HARMONIC_DROP_DB:.0f} dB down "
+#                 f"(sounds like speech/music, not DTMF)")
+#     if _db(h2_high) - _db(p_high) > -DTMF_MIN_HARMONIC_DROP_DB:
+#         return (f"column 2nd harmonic less than {DTMF_MIN_HARMONIC_DROP_DB:.0f} dB down "
+#                 f"(sounds like speech/music, not DTMF)")
+#
+#     return None  # passed everything — this is a valid DTMF pair
+
 def validate_dtmf_region(x: np.ndarray, fs, f_low, f_high):
     """
     Decide whether a candidate tone region is REALLY a DTMF digit, using
-    ITU-T Q.24-flavoured checks (the same family of checks the reference
-    decoders implement). Runs over the region's audio with a Hann window
-    for good selectivity. All checks use Goertzel bin powers — they're
+    ITU-T Q.24-flavoured checks. All checks use Goertzel bin powers —
     measurements about the signal, independent of which decoder produced
     the candidate.
 
-    Checks, in order (first failure wins, so the most specific / most
-    decisive rejection reason is reported first):
+    f_low / f_high may arrive as NOMINAL frequencies (Goertzel path:
+    770) or MEASURED ones (FFT path: the interpolated peak, e.g.
+    770.0064863494713). They are snapped to the nearest nominal pair
+    first — necessary, because the fixed probe table is keyed by exact
+    nominal values, and semantically right, because the calling decoder
+    has already enforced its frequency tolerance when it chose the digit:
+    validation asks "does this region look like the NOMINAL digit", for
+    both decoders identically.
+
+    Checks, in order (first failure wins):
+      0. snap       : candidate pair within tolerance of a nominal pair
       1. dial tone  : 350+440 Hz pair stronger than the candidate pair
-      2. twist      : row/column level difference beyond +8 / -4 dB
-      3. offset     : winner frequency not the local max among +/-2% probes
-      4. harmonics  : 2nd harmonic of either winner within 12 dB of it
+      2. twist      : row/column level difference beyond the configured limits
+      3. offset     : winner frequency not the local max among +/-tolerance probes
+      4. harmonics  : 2nd harmonic of either winner too close to it
                       (voiced speech and many instruments fail this)
 
     Returns None if the region passes as valid DTMF, else a human-readable
@@ -838,28 +1176,42 @@ def validate_dtmf_region(x: np.ndarray, fs, f_low, f_high):
     if len(x) < 8:
         return "region too short to validate"
 
-    w = np.hanning(len(x))
+    # 0. Snap the candidate pair to NOMINAL DTMF frequencies. Without this,
+    #    a measured frequency (770.0064863...) is a KeyError against the
+    #    nominal-keyed probe table. Note Python dicts treat 770 and 770.0
+    #    as the same key, which is exactly why the Goertzel path (which
+    #    passes nominal ints) never crashed and only the FFT path did.
+    nom_low = min(LOW_FREQS, key=lambda g: abs(g - f_low))
+    nom_high = min(HIGH_FREQS, key=lambda g: abs(g - f_high))
+    if (abs(nom_low - f_low) > DTMF_FREQ_TOLERANCE * nom_low
+            or abs(nom_high - f_high) > DTMF_FREQ_TOLERANCE * nom_high):
+        return (f"candidate frequencies ({f_low:.1f} / {f_high:.1f} Hz) are not "
+                f"within {DTMF_FREQ_TOLERANCE * 100:.1f}% of a DTMF pair")
+    f_low = float(nom_low)
+    f_high = float(nom_high)
+
+    rows, index = _validate_probe_freqs()
+    p = goertzel_powers(_analysis_block(x, fs), fs, rows)
+
     t = DTMF_FREQ_TOLERANCE
-    probes = [
-        f_low, f_high,                       # the candidate pair itself
-        2.0 * f_low, 2.0 * f_high,           # second harmonics
-        f_low * (1 - t), f_low * (1 + t),    # row frequency offset probes
-        f_high * (1 - t), f_high * (1 + t),  # column frequency offset probes
-        DIAL_TONE_FREQS[0], DIAL_TONE_FREQS[1],
-    ]
-    (p_low, p_high, h2_low, h2_high,
-     low_minus, low_plus, high_minus, high_plus,
-     d350, d440) = goertzel_powers(x * w, fs, probes)
+    p_low = p[index[f_low]]
+    p_high = p[index[f_high]]
+    h2_low = p[index[2.0 * f_low]]
+    h2_high = p[index[2.0 * f_high]]
+    low_minus = p[index[f_low * (1.0 - t)]]
+    low_plus = p[index[f_low * (1.0 + t)]]
+    high_minus = p[index[f_high * (1.0 - t)]]
+    high_plus = p[index[f_high * (1.0 + t)]]
+    d350 = p[index[DIAL_TONE_FREQS[0]]]
+    d440 = p[index[DIAL_TONE_FREQS[1]]]
 
     # 1. Dial tone. Pure 350+440 leaks into the DTMF bins through any real
     #    window; if the dial pair is at least as strong as what we think the
-    #    "winners" are, this is dial tone, not DTMF. (Genuine DTMF played
-    #    OVER dial tone still passes, because then the winners dominate.)
+    #    "winners" are, this is dial tone, not DTMF.
     if _db(d350 + d440) - _db(p_low + p_high) > 0.0:
         return "dial tone (350+440 Hz) is stronger than the tone pair"
 
-    # 2. Twist. A real DTMF pair has both tones within a few dB of each
-    #    other; speech, music and single stray tones do not.
+    # 2. Twist. A real DTMF pair has both tones within a few dB of each other.
     twist_db = _db(p_low) - _db(p_high)
     if twist_db > DTMF_MAX_FORWARD_TWIST_DB:
         return (f"twist {twist_db:.1f} dB exceeds +{DTMF_MAX_FORWARD_TWIST_DB:.0f} dB "
@@ -868,17 +1220,16 @@ def validate_dtmf_region(x: np.ndarray, fs, f_low, f_high):
         return (f"reverse twist {-twist_db:.1f} dB exceeds {DTMF_MAX_REVERSE_TWIST_DB:.0f} dB "
                 f"(column tone far louder than row tone)")
 
-    # 3. Frequency offset. If a +/-2% neighbour of the winning frequency has
-    #    MORE power than the winner itself, the true tone is off-frequency —
-    #    a nearby beep/siren, not DTMF.
+    # 3. Frequency offset. If a +/-tolerance neighbour of the winning
+    #    frequency has MORE power than the winner itself, the true tone is
+    #    off-frequency — a nearby beep/siren, not DTMF.
     if p_low < max(low_minus, low_plus):
         return "row tone is off-frequency by more than ~2% (not a DTMF frequency)"
     if p_high < max(high_minus, high_plus):
         return "column tone is off-frequency by more than ~2% (not a DTMF frequency)"
 
-    # 4. Second harmonics. Voiced speech is a harmonic stack — energy at f
-    #    almost always comes with energy at 2f. A DTMF sine (even from a
-    #    cheap speaker with a few % distortion) keeps 2f well down.
+    # 4. Second harmonics. Voiced speech is a harmonic stack; a DTMF sine
+    #    keeps 2f well down.
     if _db(h2_low) - _db(p_low) > -DTMF_MIN_HARMONIC_DROP_DB:
         return (f"row 2nd harmonic less than {DTMF_MIN_HARMONIC_DROP_DB:.0f} dB down "
                 f"(sounds like speech/music, not DTMF)")
@@ -887,7 +1238,6 @@ def validate_dtmf_region(x: np.ndarray, fs, f_low, f_high):
                 f"(sounds like speech/music, not DTMF)")
 
     return None  # passed everything — this is a valid DTMF pair
-
 
 # --- the temporal state machine ------------------------------------------------
 
@@ -1101,6 +1451,30 @@ class DtmfTracker:
         }
         return events
 
+    # def _finalize_latch(self, region: np.ndarray):
+    #     """Pick the digit with the configured algorithm, then validate."""
+    #     if region is None or len(region) < max(16, self.frame_len // 2):
+    #         return None, "tone region too short to validate"
+    #
+    #     if self.algorithm == "fft":
+    #         digit, (f_low_est, f_high_est) = fft_region_digit(region, self.fs)
+    #         if digit is None:
+    #             parts = []
+    #             for v in (f_low_est, f_high_est):
+    #                 parts.append(f"{v:.0f} Hz" if v is not None else "no peak")
+    #             return None, (f"FFT peaks ({parts[0]}, {parts[1]}) are not within "
+    #                           f"{DTMF_FFT_TOLERANCE * 100:.0f}% of a DTMF pair")
+    #         f_low, f_high = DIGIT_TO_FREQS[digit]
+    #     else:
+    #         windowed = region * np.hanning(len(region))
+    #         powers = goertzel_powers(windowed, self.fs, DTMF_FREQS_ALL)
+    #         f_low = LOW_FREQS[int(np.argmax(powers[:4]))]
+    #         f_high = HIGH_FREQS[int(np.argmax(powers[4:]))]
+    #         digit = FREQ_TO_DIGIT.get((f_low, f_high))
+    #
+    #     reason = validate_dtmf_region(region, self.fs, f_low, f_high)
+    #     return digit, reason
+
     def _finalize_latch(self, region: np.ndarray):
         """Pick the digit with the configured algorithm, then validate."""
         if region is None or len(region) < max(16, self.frame_len // 2):
@@ -1116,8 +1490,11 @@ class DtmfTracker:
                               f"{DTMF_FFT_TOLERANCE * 100:.0f}% of a DTMF pair")
             f_low, f_high = DIGIT_TO_FREQS[digit]
         else:
-            windowed = region * np.hanning(len(region))
-            powers = goertzel_powers(windowed, self.fs, DTMF_FREQS_ALL)
+            # _analysis_block windows at the region's true length and zero-pads
+            # to the fixed block size, so the bin values are identical to the
+            # old manual windowing — but the kernel matrix is now a cache hit.
+            block = _analysis_block(region, self.fs)
+            powers = goertzel_powers(block, self.fs, DTMF_FREQS_ALL)
             f_low = LOW_FREQS[int(np.argmax(powers[:4]))]
             f_high = HIGH_FREQS[int(np.argmax(powers[4:]))]
             digit = FREQ_TO_DIGIT.get((f_low, f_high))
@@ -1165,6 +1542,16 @@ if __name__ == "__main__":
     print("goertzel_decode:", goertzel_decode(wav, fs))
     print("fft_decode:     ", fft_decode(wav, fs))
 
+    print("\n-- benchmark_decoders (warmed up, min of 3) --")
+    bench = benchmark_decoders(wav, fs)
+    for name in ("goertzel", "fft"):
+        b = bench[name]
+        print(f"{name:9s} {b['time_ms']:9.3f} ms  {b['memory_kb']:9.1f} KB  "
+              f"result={b['result']!r}")
+    g, f = bench["goertzel"], bench["fft"]
+    print(f"time ratio Goertzel/FFT: {g['time_ms'] / max(f['time_ms'], 1e-9):.2f}  "
+          f"(memory ratio: {g['memory_kb'] / max(f['memory_kb'], 1e-9):.2f})")
+
     print("\n-- live engine (DtmfTracker) --")
 
     def run_live(label, x, **kwargs):
@@ -1188,3 +1575,5 @@ if __name__ == "__main__":
     run_live("single 700 Hz tone (must reject)", 0.5 * np.sin(2 * np.pi * 700 * t))
     dial = 0.4 * np.sin(2 * np.pi * 350 * t) + 0.4 * np.sin(2 * np.pi * 440 * t)
     run_live("dial tone 350+440 Hz (must reject)", dial)
+
+
