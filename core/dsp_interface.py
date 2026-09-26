@@ -266,6 +266,22 @@ def goertzel_decode(x: np.ndarray, fs: int) -> str:
 
     Output:
         decoded digit string, e.g. "512*90"
+
+    PERFORMANCE FIX: previously called goertzel_single_freq() -- a per-
+    sample Python `for` loop -- once per DTMF frequency (8 calls per tone
+    region). That is the *pedagogical reference* implementation (kept
+    as-is, further down, for that purpose) and is dramatically slower in
+    wall-clock time than a vectorized FFT call despite doing less total
+    arithmetic, because a Python-level loop has far more interpreter
+    overhead per sample than a single compiled/vectorized routine.
+    goertzel_powers() (defined later in this file) computes the exact same
+    Goertzel result for a whole list of frequencies in one vectorized
+    matrix multiply -- it's already used by the live decoding engine below
+    for this reason. Routing the classic file-path decoder through it too
+    makes Goertzel's real speed advantage over FFT peak-picking show up
+    here as well, with no change to which digit gets decoded (only the
+    per-frequency power *scale* differs between the two Goertzel
+    functions, and only relative ranking within a region is ever used).
     """
     tone_regions = segment_tone_regions(x, fs)
     decoded_digits = []
@@ -276,11 +292,9 @@ def goertzel_decode(x: np.ndarray, fs: int) -> str:
         if len(x_region) == 0:
             continue
 
-        low_powers = [goertzel_single_freq(x_region, fs, f) for f in LOW_FREQS]
-        high_powers = [goertzel_single_freq(x_region, fs, f) for f in HIGH_FREQS]
-
-        best_low = LOW_FREQS[int(np.argmax(low_powers))]
-        best_high = HIGH_FREQS[int(np.argmax(high_powers))]
+        powers = goertzel_powers(x_region, fs, DTMF_FREQS_ALL)
+        best_low = LOW_FREQS[int(np.argmax(powers[:4]))]
+        best_high = HIGH_FREQS[int(np.argmax(powers[4:]))]
 
         digit = FREQ_TO_DIGIT.get((best_low, best_high))
 
