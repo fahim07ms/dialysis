@@ -292,51 +292,36 @@ def segment_tone_regions(x: np.ndarray, fs: int) -> list[tuple[int, int]]:
 #
 #     return "".join(decoded_digits)
 
-def goertzel_decode(x: np.ndarray, fs: int) -> str:
+def goertzel_decode(x: np.ndarray, fs: int, gate_db: float | None = None) -> str:
     """
     Decode a full signal (tones + gaps) into a digit string using the
     Goertzel algorithm. This is the core of the whole app (file path).
 
     Inputs:
-        x  : 1-D numpy array, full recording
-        fs : sample rate
+        x       : 1-D numpy array, full recording
+        fs      : sample rate
+        gate_db : optional — tone pair must exceed the noise floor by this
+                  many dB. None (the default) means "use the engine's
+                  DTMF_GATE_DB_DEFAULT". It's a None sentinel rather than
+                  the constant itself because DEFAULT ARGUMENT VALUES ARE
+                  EVALUATED AT DEF TIME — this function is defined near the
+                  top of the file, before the engine constants section, so
+                  referencing the constant here directly is a NameError at
+                  import. decode_file_events() resolves None at call time.
 
     Output:
         decoded digit string, e.g. "512*90"
 
-    PERFORMANCE: the 8 bin measurements come from goertzel_powers() — the
-    vectorized single-bin-DFT form of the Goertzel algorithm (one cached
-    BLAS matrix-vector product for all 8 frequencies) — NOT from 8 calls to
-    the per-sample reference loop in goertzel_single_freq(). Both compute
-    the same bin values; the loop version exists for teaching (Phases 5/8)
-    and runs ~100-1000x slower under CPython. The Benchmark tab was
-    measuring the interpreter, not the algorithm.
-
-    Each region is measured over the canonical fixed-length analysis block
-    from _analysis_block(), so the kernel matrix is a cache hit for every
-    region after the first.
+    ARCHITECTURE (noisy-file fix): files decode through the SAME frame
+    engine as the live mic path (decode_file_events -> DtmfTracker) —
+    adaptive noise floor primed from the file itself, per-frame spectral
+    dominance, latch/release state machine, Q.24 validation at latch.
+    The Goertzel-ness lives in the engine's bin measurements
+    (goertzel_powers) and the latch-time digit pick.
     """
-    tone_regions = segment_tone_regions(x, fs)
-    decoded_digits = []
-
-    for start, end in tone_regions:
-        x_region = x[start:end]
-
-        if len(x_region) < fs * 0.04:  # At least 40ms to be a valid DTMF tone
-            continue
-
-        powers = goertzel_powers(_analysis_block(x_region, fs), fs, DTMF_FREQS_ALL)
-        best_low = LOW_FREQS[int(np.argmax(powers[:4]))]
-        best_high = HIGH_FREQS[int(np.argmax(powers[4:]))]
-
-        reason = validate_dtmf_region(x_region, fs, best_low, best_high)
-        if reason is None:
-            digit = FREQ_TO_DIGIT.get((best_low, best_high))
-            if digit is not None:
-                decoded_digits.append(digit)
-
-    return "".join(decoded_digits)
-
+    digits, _events = decode_file_events(x, fs, algorithm="goertzel",
+                                         gate_db=gate_db)
+    return digits
 
 # def goertzel_single_freq(x: np.ndarray, fs: int, target_freq: float) -> float:
 #     """
@@ -459,44 +444,22 @@ def goertzel_single_freq(x: np.ndarray, fs: int, target_freq: float) -> float:
 #
 #     return "".join(decoded_digits)
 
-def fft_decode(x: np.ndarray, fs: int) -> str:
+def fft_decode(x: np.ndarray, fs: int, gate_db: float | None = None) -> str:
     """
-    Same job as goertzel_decode(), but using FFT peak-picking instead of
-    the Goertzel algorithm. Lets the UI show the two decoders side by side.
+    Same job as goertzel_decode(), but the digit at each latch is picked by
+    the FFT path (fft_region_digit: Hann window, zero-padding, parabolic
+    peak interpolation, frequency tolerance) instead of Goertzel bin argmax.
 
-    Regions are center-truncated to the same canonical DTMF_BLOCK_SECONDS
-    span that goertzel_decode measures, so both decoders analyze the same
-    audio and their agreement check in the Benchmark tab stays meaningful.
-    (fft_region_digit applies its own Hann window and zero-padding, so only
-    the truncation happens here.)
+    Detection/gating/validation machinery is deliberately SHARED with
+    goertzel_decode, so the Benchmark tab's agreement check compares the
+    two spectral measurements on identical detections — not two different
+    segmenters. gate_db uses the same None-sentinel pattern as
+    goertzel_decode (default values are evaluated at def time; this
+    function is defined above the engine constants).
     """
-    tone_regions = segment_tone_regions(x, fs)
-    decoded_digits = []
-    n_block = _analysis_block_len(fs)
-
-    for start, end in tone_regions:
-        x_region = x[start:end]
-        if len(x_region) < fs * 0.04:  # At least 40ms
-            continue
-
-        if len(x_region) > n_block:
-            c = (len(x_region) - n_block) // 2
-            x_region = x_region[c:c + n_block]
-
-        digit, (f_low, f_high) = fft_region_digit(x_region, fs)
-        if digit is not None:
-            # Validate against the NOMINAL pair for this digit — the same
-            # input the Goertzel path uses. f_low/f_high above are the FFT's
-            # MEASURED (interpolated) peak frequencies; the tolerance was
-            # already enforced inside fft_region_digit when it snapped them
-            # to pick the digit. Passing measured values onward would break
-            # validate_dtmf_region's fixed, nominal-keyed probe table.
-            nom_low, nom_high = DIGIT_TO_FREQS[digit]
-            reason = validate_dtmf_region(x_region, fs, nom_low, nom_high)
-            if reason is None:
-                decoded_digits.append(digit)
-
-    return "".join(decoded_digits)
+    digits, _events = decode_file_events(x, fs, algorithm="fft",
+                                         gate_db=gate_db)
+    return digits
 
 # ---------------------------------------------------------------------------
 # PHASE 7 — Spectrogram
@@ -874,6 +837,11 @@ DTMF_BLOCK_SECONDS = 0.12   # Fixed analysis-block length. Both decoders and
                             #      comfortably exceeds Q.24's 40 ms minimum
                             #      and gives ~8 Hz resolution at 8 kHz.
 
+DTMF_FLOOR_PRIME_PERCENTILE = 10.0   # offline floor estimate: percentile of frame
+                                     # pair-levels that counts as "not being a tone"
+DTMF_FLOOR_PRIME_HEADROOM_DB = 15.0  # primed floor must sit at least this far below
+                                     # the loudest frame, so a file that is mostly
+                                     # dialing doesn't prime its floor into its own tones
 
 def _analysis_block_len(fs) -> int:
     return max(64, int(round(DTMF_BLOCK_SECONDS * fs)))
@@ -1330,6 +1298,37 @@ class DtmfTracker:
         self._last_reject_t = -1e9
         self.last_frame_info: dict = {}
 
+    def prime_noise_floor(self, x: np.ndarray) -> None:
+        """
+        Prime the adaptive noise floor from a recording that is already
+        fully available (the file/import path). The live path can't do this
+        — it must let the min-with-leak tracker climb at 10 dB/s from its
+        optimistic -60 dB start — but offline we can measure first.
+
+        Method: winner-pair level of up to 500 evenly-spaced frames; the
+        floor is the 10th percentile of those levels ("how loud is this
+        file when it's not being a tone"), capped so it stays at least
+        DTMF_FLOOR_PRIME_HEADROOM_DB below the loudest frame (protects
+        dense-dialing files where even the 10th percentile lands inside a
+        tone). Read-only: consumes no samples, emits no events — safe to
+        call right before push() of the same audio.
+        """
+        x = np.asarray(x, dtype=np.float64).ravel()
+        if x.size < 4 * self.frame_len:
+            return  # too little audio to estimate anything sensible
+
+        total = 1 + (x.size - self.frame_len) // self.hop
+        step = max(1, total // 500)              # <= ~500 frames, spread out
+        starts = np.arange(0, total, step) * self.hop
+        idx = starts[:, None] + np.arange(self.frame_len)[None, :]
+        powers = frame_bin_powers(x[idx], self.fs, DTMF_FREQS_ALL)
+        pair = powers[:, :4].max(axis=1) + powers[:, 4:].max(axis=1)
+        level_db = 10.0 * np.log10(pair + _TINY)
+
+        floor = float(np.percentile(level_db, DTMF_FLOOR_PRIME_PERCENTILE))
+        floor = min(floor, float(level_db.max()) - DTMF_FLOOR_PRIME_HEADROOM_DB)
+        self._floor_db = float(np.clip(floor, -100.0, -5.0))
+
     def push(self, x: np.ndarray) -> list[dict]:
         """Feed new samples (any length); returns events since last push."""
         events: list[dict] = []
@@ -1515,6 +1514,50 @@ class DtmfTracker:
         """Min-with-leak noise floor: drops instantly, rises at 10 dB/s max."""
         leaked = self._floor_db + DTMF_FLOOR_LEAK_DB_PER_FRAME
         self._floor_db = float(np.clip(min(level_db, leaked), -100.0, -5.0))
+
+FILE_DECODE_CHUNK_SECONDS = 2.0   # push the file in slices this long: bounds the
+                                  # frames matrix (~4 MB at 48 kHz) no matter how
+                                  # long the recording is
+
+
+def decode_file_events(x: np.ndarray, fs: int, algorithm: str = "goertzel",
+                       gate_db: float | None = None) -> tuple[str, list[dict]]:
+    """
+    Decode a WHOLE recording (file import path) with the live frame engine.
+
+    Why not segment_tone_regions() + per-region measurement? That front end
+    gates on 5% of the file's loudest 10 ms chunk, i.e. it only finds gaps
+    that are ~26 dB below the peaks — true for synthesized files with
+    digital-zero gaps, false for essentially every real recording. The
+    DtmfTracker instead gates each 20 ms frame against an ADAPTIVE floor,
+    requires per-frame spectral dominance, and latches digits with a
+    temporal state machine — the same machinery that works for the live
+    microphone. Offline bonus: prime_noise_floor() sets the floor from the
+    file itself before decoding starts.
+
+    gate_db=None means "use DTMF_GATE_DB_DEFAULT", resolved HERE at call
+    time — this function is defined after the constants section, so the
+    reference is safe (this is the late-bound-default pattern; the two
+    decoders above can't reference the constant in their signatures
+    because they're defined before it).
+
+    Output:
+        (digits, events) — the decoded string plus the tracker's full event
+        list (digit / reject / release), so callers can show WHY a file
+        produced fewer digits than expected.
+    """
+    if gate_db is None:
+        gate_db = DTMF_GATE_DB_DEFAULT
+    x = np.asarray(x, dtype=np.float64).ravel()
+    tracker = DtmfTracker(fs, algorithm=algorithm, gate_db=gate_db)
+
+    events: list[dict] = []
+    chunk = max(1, int(FILE_DECODE_CHUNK_SECONDS * fs))
+    for i in range(0, x.size, chunk):
+        events.extend(tracker.push(x[i:i + chunk]))
+
+    digits = "".join(e["digit"] for e in events if e["type"] == "digit")
+    return digits, events
 
 
 # ---------------------------------------------------------------------------

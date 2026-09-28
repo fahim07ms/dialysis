@@ -314,21 +314,24 @@ class DecoderPanel(QWidget):
             return
 
         algo_name = self.algo_combo.currentText()
-        decode_fn = ALGORITHMS[algo_name]
         start = time.perf_counter()
-        try:
-            digits = decode_fn(self._samples, self._fs)
-        except NotImplementedError:
-            fn_name = "goertzel_decode()" if algo_name == "Goertzel" else "fft_decode()"
-            self.result_label.setText("—")
-            self.status_label.setText(f"{algo_name} needs {fn_name} implemented first.")
-            return
+        digits, events = dsp.decode_file_events(
+            self._samples, self._fs,
+            algorithm=algo_name.lower(),
+            gate_db=self._gate_db,   # the Detection Threshold slider now
+                                     # applies to file decoding too
+        )
         elapsed_ms = (time.perf_counter() - start) * 1000
 
         self.result_label.setText(digits if digits else "(empty)")
-        self.status_label.setText(
-            f"{algo_name} · {elapsed_ms:.2f} ms · {len(digits)} digit(s)"
-        )
+
+        rejects = [e["reason"] for e in events if e["type"] == "reject"]
+        msg = f"{algo_name} · {elapsed_ms:.2f} ms · {len(digits)} digit(s)"
+        if not digits:
+            msg += " — no valid DTMF found"
+        if rejects:
+            msg += f" · {len(rejects)} region(s) rejected (last: {rejects[-1]})"
+        self.status_label.setText(msg)
 
     # -- Live microphone decoding -------------------------------------------
 
