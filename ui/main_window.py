@@ -60,7 +60,7 @@ class MainWindow(QMainWindow):
         # Noise & Sampling and Benchmark both need the full signal to work
         # from — same pattern as everything above.
         self.left_panel.audio_ready.connect(self.right_panel.noise_sampling_tab.update_audio)
-        self.left_panel.audio_ready.connect(self.right_panel.benchmark_tab.update_audio)
+        # self.left_panel.audio_ready.connect(self.right_panel.benchmark_tab.update_audio)
 
         # While audio is actually playing, stream partial samples so the
         # waveform/spectrum appear to grow in sync with playback.

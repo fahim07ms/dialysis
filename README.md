@@ -1,162 +1,251 @@
 # Dialysis — DTMF Signal Analysis Studio
 
-An interactive desktop app for generating, visualizing, and decoding DTMF
-(touch-tone) signals. Built with PyQt6 + pyqtgraph, styled after a Pixel-style
-dark/teal quick-settings panel.
+Dialysis is an interactive desktop application for the synthesis, visualization,
+and decoding of Dual-Tone Multi-Frequency (DTMF) signals. It implements a complete
+transmit-and-receive signal processing pipeline: tone generation, WAV export,
+recording analysis, real-time microphone decoding, and a set of visualizations
+that explain the signal-processing theory behind each stage.
 
-## Run it
+The application is written in Python using PyQt6 and pyqtgraph. All core
+algorithms (FFT, Goertzel, convolution, and the decoding engine) are implemented
+in the project itself rather than delegated to library routines.
+
+---
+
+## 1. Installation and Usage
 
 ```bash
 pip install -r requirements.txt
 python main.py
 ```
 
-Linux users: `sounddevice` needs PortAudio at the OS level —
-`sudo apt install libportaudio2` if it complains on startup.
+On Linux, `sounddevice` requires the PortAudio library at the operating-system
+level:
 
-## Project structure
+```bash
+sudo apt install libportaudio2
+```
+
+## 2. Features
+
+### Signal generation and file handling
+- A 4 × 4 virtual keypad and keyboard entry generate the composite DTMF signal
+  `x[n] = sin(2πf₁n/fₛ) + sin(2πf₂n/fₛ)` across the low group (697–941 Hz) and
+  high group (1209–1633 Hz), with immediate audio playback.
+- Multi-digit sequences can be exported to uncompressed WAV files.
+- External WAV recordings can be imported, played back, and decoded. The name of
+  the loaded file is displayed in the interface.
+
+### Analysis views
+- **Waveform and magnitude spectrum.** The time-domain signal and its spectrum
+  update continuously during playback and settle on the complete analysis when
+  playback ends. The eight DTMF frequencies are marked on the spectrum, and
+  detected tone regions are shaded on the waveform.
+- **Spectrogram.** A time–frequency intensity plot with a 60 dB dynamic range,
+  smooth interpolation, and optional DTMF frequency marker lines. It also updates
+  from the live microphone stream.
+- **Pole-zero visualizer.** An interactive Z-plane plot of the Goertzel
+  resonators, with a frequency selector and the magnitude response of the
+  selected resonator, illustrating its selectivity.
+- **Impulse response and convolution.** Displays the impulse response `h[n]` of a
+  resonator tuned to a chosen DTMF frequency and its convolution
+  `y[n] = x[n] * h[n]` with the current signal.
+- **Noise and sampling-rate controls.** Sliders for signal-to-noise ratio
+  (additive white Gaussian noise) and sampling rate demonstrate how decoding
+  degrades with noise and how it fails through aliasing when the rate falls below
+  the Nyquist requirement (`fₛ > 3266 Hz`). The processed signal may be exported
+  as a WAV file.
+- **Benchmark.** A side-by-side comparison of the FFT and Goertzel decoders in
+  execution time, peak memory, and agreement of results.
+
+### Decoding
+- **Goertzel decoder** and **FFT decoder**, selectable from the Decoder tab and
+  producing the same digit sequence on the same input.
+- **Live microphone decoding.** Digits are decoded from an open microphone in real
+  time, with live per-frequency power bars, the noise floor and gate level, the
+  reason for any rejected detection, an adjustable detection threshold, and an
+  option to save the captured recording for later inspection.
+
+---
+
+## 3. Project Structure
 
 ```
-main.py                     entry point: loads fonts, applies theme, launches window
+main.py                        Application entry point (fonts, theme, window)
 core/
-  dsp_interface.py            ALL signal-processing math lives here. No PyQt imports.
-  utils.py                    small helpers (bit-reversal, zero-padding) used by the custom FFT
-  audio_io.py                 device I/O: WAV read/write, speaker playback, MicStream (mic capture)
+  dsp_interface.py             All signal-processing algorithms; no PyQt imports
+  utils.py                     Bit-reversal and zero-padding helpers for the FFT
+  signal_lti.py                Reference discrete-signal and LTI-system classes
+  dsp_interface_selftest.py    Cross-check of the convolution against signal_lti.py
+  audio_io.py                  Device I/O: playback, WAV read/write, microphone capture
 ui/
-  theme.py                    colors + QSS stylesheet (dark/teal Pixel-style theme)
-  keypad.py                   4x4 keypad widget
-  left_panel.py                keypad, text entry, Play/Export/Import, live playback timer
-  decoder_panel.py            algorithm picker, Decode button, live mic decoding — lives in the sidebar
-  main_window.py               assembles left + right panel into the split window
-  right_panel.py               tabbed analysis area
+  theme.py                     Colour palette and stylesheet
+  keypad.py                    Keypad widget
+  left_panel.py                Keypad, text entry, playback, import and export
+  decoder_panel.py             Decoder tab and live microphone interface
+  right_panel.py               Tabbed analysis area
+  main_window.py               Window layout and signal wiring
   tabs/
-    waveform_tab.py            time-domain waveform + magnitude spectrum, live-updating during playback
-    spectrogram_tab.py         time/frequency/intensity image, background-threaded
-assets/fonts/                 bundled Nunito variable font
+    waveform_tab.py            Waveform and magnitude spectrum
+    spectrogram_tab.py         Spectrogram
+    pole_zero_tab.py           Z-plane visualizer
+    convolution_tab.py         Impulse response and convolution
+    noise_sampling_tab.py      Noise and sampling-rate controls
+    benchmark_tab.py           FFT and Goertzel benchmark
+assets/fonts/                  Bundled Nunito font
+DSP_REPORT.md                  Detailed description of the signal-processing module
 ```
 
-See **DSP_REPORT.md** for a full write-up of every function in
-`core/dsp_interface.py` — what it does, the math behind it, and why it's
-built the way it is.
+### Architectural principle
 
-## The contract
+The signal-processing layer and the user interface are strictly separated.
 
-- `core/` never imports PyQt. Pure numpy/Python in, numpy/Python out — fully
-  testable from a terminal with no GUI running.
-- `ui/` never does math. It calls `core/dsp_interface.py` and displays
-  whatever comes back, catching `NotImplementedError` gracefully wherever a
-  phase isn't built yet instead of crashing.
+- `core/` does not import PyQt. Its functions accept and return plain NumPy
+  arrays, numbers, strings, and dictionaries, so they can be tested from a
+  terminal without the interface.
+- `ui/` performs no signal-processing computation. It calls `core/` and displays
+  the results.
 
-## What's done
+---
 
-**Phase 0 — App skeleton.** Two-pane splitter layout, dark/teal QSS theme,
-bundled Nunito font.
+## 4. Signal-Processing Methods
 
-**Phase 1 — Tone synthesis.** `generate_dtmf_tone()`. Keypad taps and typed
-sequences play immediately.
+### Tone synthesis
+Each key is generated as the sum of one row frequency and one column frequency.
+Sequences are built by concatenating tones separated by silent gaps, so that
+consecutive digits remain distinguishable.
 
-**Phase 2 — WAV export.** `sequence_to_wav()`. Export button writes a real
-`.wav` file.
+### Fast Fourier Transform
+The FFT is an iterative radix-2 Cooley–Tukey implementation with bit-reversal
+reordering, written from scratch. Its output was verified against `numpy.fft`
+to a precision of approximately 10⁻⁷. It provides the magnitude spectrum used in
+the visualizations.
 
-**Phase 3 — Spectrum analysis.** A hand-rolled iterative radix-2 Cooley-Tukey
-FFT (`fft()`, with `fft_recursive()` as a reference/alternate implementation)
-backs `compute_spectrum()`. Verified against `numpy.fft` to ~1e-7 accuracy.
-The Waveform tab shows both the time-domain signal and the magnitude
-spectrum, **live-updating during playback** (bounded/throttled — see
-"Performance notes" below) and settling on the full, complete analysis the
-instant playback finishes.
+### Goertzel algorithm
+The Goertzel recurrence `s[n] = x[n] + 2cos(ω)s[n−1] − s[n−2]` is a second-order
+resonator with a conjugate pole pair on the unit circle at `e^{±jω}`. Evaluating it
+over a block yields the signal power at a single target frequency, so only the
+eight DTMF frequencies need to be measured. The classical per-sample form is
+retained as a reference implementation, and a mathematically equivalent
+vectorized form is used inside the decoding engine.
 
-**Phase 4 — Segmentation.** `segment_tone_regions()` uses RMS energy over
-10ms frames with a relative threshold, merging consecutive loud frames into
-clean `(start, end)` tone regions. The Waveform tab overlays each detected
-region as a shaded band.
+### Decoding engine
+Both the file decoders and the live decoder use one shared frame-based engine
+(`DtmfTracker`, with `decode_file_events` for whole recordings):
 
-**Phase 5 — Goertzel decoder.** `goertzel_single_freq()` + `goertzel_decode()`.
-Verified against all 16 keypad digits and against a real 44.1kHz recording
-(`freesound_community-dtmf_dial-105992.wav`) — decodes it perfectly.
+1. The signal is divided into overlapping frames of 20 ms with a 5 ms hop.
+2. The power at each of the eight DTMF frequencies is measured per frame.
+3. A frame is treated as tone-like if its strongest row–column pair exceeds an
+   adaptive noise floor by a configurable margin (10 dB by default) and if that
+   pair holds a sufficient share of the total power across the eight bins
+   (dominance of at least 0.60). The noise floor may fall immediately but rises
+   only slowly, so tones do not raise it.
+4. A digit is latched after six consecutive agreeing frames and released after
+   four disagreeing frames, so a repeated digit is reported twice while a brief
+   dip inside a tone does not split it.
+5. At the moment of latching, the digit is chosen by the selected algorithm
+   (Goertzel bin selection, or FFT peak picking with a Hann window, zero-padding,
+   and parabolic interpolation), and the detection is validated against
+   ITU-T Q.24-style criteria: dial-tone rejection, limits on the level difference
+   ("twist") between the two tones, frequency-offset tolerance, and second-harmonic
+   rejection. Rejected detections are reported with their reason.
 
-**Phase 6 — FFT decoder.** `fft_decode()` — same job as Goertzel, via
-spectrum peak-picking instead. Both algorithms agree on every test signal
-tried so far, including the real recording. Selectable from the same
-dropdown in the Decoder panel.
+Because both algorithms share the same detection and validation stages, the
+benchmark compares the two spectral measurements on identical detections.
 
-**Phase 7 — Spectrogram.** `compute_spectrogram()` via `scipy.signal.spectrogram`.
-Rendered as a themed (teal, not rainbow) image, computed on a background
-thread so a long recording can't freeze the window.
+### Convolution
+Convolution is implemented from first principles using the superposition
+principle: the output is the sum of shifted and scaled copies of one signal,
+one for each sample of the other. The implementation is vectorized and its
+output is verified against the reference classes in `core/signal_lti.py` and
+against `numpy.convolve` by `core/dsp_interface_selftest.py`. The reference
+classes are correct but scale approximately quadratically with signal length
+and are therefore used for verification rather than for runtime processing.
 
-**UI layout.** The Decoder (algorithm picker, Decode button, result display)
-was moved from its own tab into the left sidebar, right next to whatever
-produced the signal — no tab-switching needed to decode something you just
-played or imported.
+### Noise and resampling
+Noise is added at a specified signal-to-noise ratio by scaling zero-mean
+Gaussian noise relative to the measured signal power. Resampling is performed with
+`scipy.signal.resample`.
 
-**Live microphone decoding.** `core/audio_io.py`'s `MicStream` captures
-continuously; `decoder_panel.py` orchestrates a rolling buffer, a
-"safely-closed" check (won't trust a tone as finished without a trailing
-silence margin), and a **confidence gate** (`_is_valid_dtmf_region`) that
-rejects noise before it can masquerade as a digit — built entirely from
-already-exposed `dsp_interface.py` primitives, no new core math needed.
-No mic hardware exists in the dev sandbox this was built in, so it's been
-validated with simulated real-time streaming and real recorded audio;
-**real-hardware testing surfaced two live bugs, both since fixed**: an
-`Invalid input sample format` error (fixed by requesting `float32` from the
-device instead of `float64`, which is what real drivers actually support),
-and background noise getting misread as digits (fixed by the confidence
-gate above — measured empirically: pure noise never exceeds ~0.58
-"dominance" across many trials, real tones never drop below ~0.99).
+### Benchmarking
+Each decoder is preceded by a warm-up run so that one-time setup costs are not
+charged to either. Execution time is the minimum of three runs, and peak memory
+is measured with `tracemalloc`.
 
-## Performance notes (read this if something feels slow)
+---
 
-Two real freezes were found and fixed during development, both from the
-same root cause: the hand-written FFT is `O(N log N)` but in pure Python
-loops, so calling it on a *large* array is genuinely slow (measured: ~4
-seconds on the full 10-second real recording).
+## 5. Live Microphone Capture
 
-- **Live view** (during playback/mic listening): only ever runs
-  `compute_spectrum()` on a small bounded trailing window, throttled to
-  every other timer tick — not the whole growing signal.
-- **Full analysis** (once playback/import finishes): runs on a background
-  `QThread` so a long recording can't freeze the window, however long the
-  computation takes.
+- The microphone is opened at the input device's native sampling rate rather than
+  a forced rate; the decoding engine adapts to whatever rate the device provides.
+- A one-pole DC blocker (cut-off approximately 80 Hz) removes microphone offset
+  without affecting the DTMF band.
+- A bounded queue with drop-oldest behaviour prevents unbounded memory growth,
+  and any dropped audio is counted and reported so the user is informed.
+- Samples are requested from the device as 32-bit floating point, which is widely
+  supported, and converted to 64-bit for processing.
 
-If you add new analysis that calls `compute_spectrum()`, `segment_tone_regions()`,
-or anything else that scales with signal length, keep this pattern in mind —
-bound the input size for anything that runs on a timer, and background-thread
-anything that runs once on a potentially-large complete signal.
+---
 
-## What's next
+## 6. Performance Considerations
 
-**Phase 8 — Pole-Zero visualizer.** `goertzel_poles()` — not implemented.
-Needs the pole locations of the Goertzel resonator on the Z-plane for each
-DTMF frequency (a 2nd-order recursive filter → a conjugate pole pair on the
-unit circle per frequency). UI (Z-plane plot, unit circle, resonance
-markers) not built yet either.
+The hand-written FFT is `O(N log N)` but is executed in Python, so applying it to
+a long signal is comparatively slow (approximately four seconds for a ten-second
+recording at 44.1 kHz). The interface therefore observes the following rules:
 
-**Phase 9 — Impulse Response & Convolution.** `impulse_response()` and
-`convolve_signals()` — not implemented. UI (h[n] plot + animated
-convolution step-through) not built yet.
+- **Live views** compute the spectrum only over a small, bounded trailing window
+  and only on a subset of timer ticks, so the cost is independent of how long
+  playback or listening continues.
+- **Whole-signal analyses** (full spectrum, segmentation, spectrogram,
+  convolution, noise processing, and benchmarking) run on background threads,
+  and each result is tagged with a request identifier so that a stale result
+  cannot overwrite a newer one.
+- **Plots** of long signals use automatic downsampling for display only.
 
-**Phase 10 — Noise Injector & Variable Sampling Rate.** `add_awgn_noise()`
-and `resample_signal()` — not implemented. UI (AWGN slider, sample-rate
-slider, live aliasing demo) not built yet.
+Any new analysis whose cost grows with signal length should follow the same
+approach.
 
-**Phase 11 — Benchmark Analyzer.** `benchmark_decoders()` — not implemented.
-UI (side-by-side FFT vs Goertzel timing/memory/accuracy) not built yet. The
-Decoder panel already demonstrates the timing gap informally (Goertzel
-~12ms vs FFT ~55ms on the same 6-digit signal) — this phase formalizes it.
+---
 
-## Known tuning knobs (things that may need adjusting on real hardware)
+## 7. Validation
 
-- `segment_tone_regions()`'s threshold (`0.2 * max(rms)`) is purely
-  *relative* to the loudest frame in whatever signal it's given. It works
-  well on clean synthetic/file audio. On a genuinely noisy live mic, an
-  **absolute floor** (`threshold = max(0.2 * max(rms), MIN_ABSOLUTE_RMS)`)
-  may help — not yet added, since the right floor value depends on your
-  specific microphone's gain and hasn't been calibrated against real
-  hardware.
-- `MIC_SAFETY_MARGIN_SECONDS` (currently 0.15s, in `decoder_panel.py`) is
-  how long a silence gap must be before a tone is trusted as "finished."
-  If real dialing has shorter gaps than this, digits could get missed —
-  worth tuning against how you actually dial.
-- `MIC_MIN_DOMINANCE` (currently 0.75) is the confidence-gate threshold.
-  Measured with a wide safety margin (noise tops out ~0.58, real tones stay
-  above ~0.99), but real-world room acoustics may shift these numbers.
+- All 16 keypad digits decode correctly with both algorithms.
+- A real 10-second, 44.1 kHz recording of an actual phone being dialled decodes to
+  the expected sequence with both algorithms.
+- The Goertzel poles lie on the unit circle to numerical precision, and the
+  impulse response agrees with the closed form `sin((n+1)ω)/sin(ω)`.
+- Decoding remains correct down to the Nyquist limit of the highest DTMF
+  frequency and fails below it, as predicted by the sampling theorem.
+- The benchmark consistently shows the Goertzel decoder to be faster than the FFT
+  decoder on the same input.
+
+---
+
+## 8. Configurable Parameters
+
+The principal tunable parameters are defined as constants in
+`core/dsp_interface.py`:
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `DTMF_FRAME_SECONDS` / `DTMF_HOP_SECONDS` | 20 ms / 5 ms | Analysis frame length and step |
+| `DTMF_LATCH_FRAMES` / `DTMF_RELEASE_FRAMES` | 6 / 4 | Frames required to start and end a tone |
+| `DTMF_GATE_DB_DEFAULT` | 10 dB | Margin of the tone pair above the noise floor |
+| `DTMF_MIN_DOMINANCE_DEFAULT` | 0.60 | Minimum share of power in the winning pair |
+| `DTMF_MAX_FORWARD_TWIST_DB` / `DTMF_MAX_REVERSE_TWIST_DB` | 15 dB / 12 dB | Permitted level difference between the two tones |
+| `DTMF_MIN_HARMONIC_DROP_DB` | 6 dB | Required drop of the second harmonic below its fundamental |
+| `DTMF_FREQ_TOLERANCE` | ±2.5 % | Permitted frequency offset from nominal |
+
+The detection margin can also be adjusted at run time with the Detection
+Threshold slider in the Decoder tab. Microphone gain and room acoustics vary, so
+these values may need adjustment for a particular device and environment.
+
+---
+
+## 9. Possible Future Work
+
+- Calibration of the detection thresholds automatically against the measured noise
+  characteristics of the input device.
+- Decoding of additional signalling formats that use the same analysis engine.
+- An automated regression test suite covering the decoding engine with recorded
+  real-world audio.
